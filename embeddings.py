@@ -2,7 +2,6 @@
 # 🧬 Local Embeddings — sentence-transformers (zero API cost)
 # ================================================================
 from __future__ import annotations
-import spaces
 import threading
 from contextlib import suppress
 

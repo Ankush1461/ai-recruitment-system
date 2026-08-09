@@ -3,7 +3,6 @@
 # ================================================================
 from __future__ import annotations
 
-import spaces
 import functools
 import os
 import threading
