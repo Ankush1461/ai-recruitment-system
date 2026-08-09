@@ -890,7 +890,7 @@ def _verify_id_token(token: str, audience: str) -> dict:
     behind Google's servers, turning every Google login into a false
     "Google sign-in failed".
     """
-    if not token or not _GOOGLE_AUTH_AVAILABLE or not audience:
+    if not token or not _GOOGLE_AUTH_AVAILABLE or not audience or _google_id_token is None or _google_requests is None:
         return {}
     try:
         claims = _google_id_token.verify_oauth2_token(
