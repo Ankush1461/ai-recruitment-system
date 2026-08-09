@@ -5,6 +5,19 @@
 from __future__ import annotations
 
 import os
+from typing import Any
+
+try:
+    import spaces  # type: ignore
+except Exception:
+    class _DummySpaces:
+        @staticmethod
+        def GPU(func: Any = None, **kwargs: Any) -> Any:
+            if func is None:
+                return lambda f: f
+            return func
+
+    spaces = _DummySpaces()  # type: ignore
 
 from sentence_transformers import CrossEncoder
 
@@ -27,6 +40,7 @@ def get_model() -> CrossEncoder:
     return _model
 
 
+@spaces.GPU
 def rerank(query: str, hits: list[dict], top_k: int = 3) -> list[dict]:
     """Rerank retrieval hits with a cross-encoder.
 

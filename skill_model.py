@@ -30,9 +30,16 @@ behaves exactly as before.
 from __future__ import annotations
 
 try:
-    import spaces  # type: ignore # noqa: F401
+    import spaces  # type: ignore
 except Exception:
-    pass
+    class _DummySpaces:
+        @staticmethod
+        def GPU(func: Any = None, **kwargs: Any) -> Any:
+            if func is None:
+                return lambda f: f
+            return func
+
+    spaces = _DummySpaces()  # type: ignore
 
 import argparse
 import contextlib
@@ -550,6 +557,7 @@ def available() -> bool:
     return load()
 
 
+@spaces.GPU
 def _predict_batch(texts: list[str]) -> list[tuple[str, float]]:
     """Batch single-label prediction → [(label, confidence), ...].
 

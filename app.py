@@ -1,9 +1,18 @@
+from typing import Any
+
 # Optional Hugging Face Spaces compatibility: spaces must be imported before
 # any CUDA/PyTorch modules, otherwise spaces.reloading throws RuntimeError.
 try:
-    import spaces  # type: ignore # noqa: F401
+    import spaces  # type: ignore
 except Exception:
-    pass
+    class _DummySpaces:
+        @staticmethod
+        def GPU(func: Any = None, **kwargs: Any) -> Any:
+            if func is None:
+                return lambda f: f
+            return func
+
+    spaces = _DummySpaces()  # type: ignore
 
 import json
 import os
@@ -14,7 +23,6 @@ import time
 import auth
 import backup
 import db
-import embeddings
 import vectorstore
 from ui import demo
 

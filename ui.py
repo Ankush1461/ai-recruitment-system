@@ -3,10 +3,19 @@
 # ================================================================
 from __future__ import annotations
 
+from typing import Any
+
 try:
-    import spaces  # type: ignore # noqa: F401
+    import spaces  # type: ignore
 except Exception:
-    pass
+    class _DummySpaces:
+        @staticmethod
+        def GPU(func: Any = None, **kwargs: Any) -> Any:
+            if func is None:
+                return lambda f: f
+            return func
+
+    spaces = _DummySpaces()  # type: ignore
 
 import functools
 import os

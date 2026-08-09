@@ -359,7 +359,7 @@ def run_eval(
         no_docs = _dedupe_docs(ranked)[:k]
         no_rows.append(_score_query(q, no_docs, k))
 
-        if use_rerank:
+        if use_rerank and reranker is not None:
             pool = ranked[:pool_k]
             reranked_chunks = reranker(q["text"], pool, k)
             with_docs = _dedupe_docs(reranked_chunks)[:k]

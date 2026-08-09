@@ -2,13 +2,22 @@
 # 🧬 Local Embeddings — sentence-transformers (zero API cost)
 # ================================================================
 from __future__ import annotations
+
 import threading
 from contextlib import suppress
+from typing import Any
 
 try:
-    import spaces  # type: ignore # noqa: F401
+    import spaces  # type: ignore
 except Exception:
-    pass
+    class _DummySpaces:
+        @staticmethod
+        def GPU(func: Any = None, **kwargs: Any) -> Any:
+            if func is None:
+                return lambda f: f
+            return func
+
+    spaces = _DummySpaces()  # type: ignore
 
 from sentence_transformers import SentenceTransformer
 
@@ -53,6 +62,7 @@ def warm() -> None:
         get_model()
 
 
+@spaces.GPU
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """Embed a batch of text strings. Returns list of 384-dim float vectors."""
     model = get_model()
