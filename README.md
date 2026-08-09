@@ -1,3 +1,15 @@
+---
+title: TalentIQ
+emoji: 🚀
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+sdk_version: 4.44.1
+app_file: app.py
+pinned: false
+---
+
+
 # 💼 Smart AI Recruiter System (RAG Edition)
 ### 🚀 Phase 2 — Mini-ATS: Jobs · Corpus Ranking · Rubric Screening · Multi-turn Interview
 
