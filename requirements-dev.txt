@@ -1,0 +1,8 @@
+# Dev / test-only dependencies (not needed to run the app)
+-r requirements.txt
+pytest>=8
+
+# Quality gates (see ruff.toml + pyrightconfig.json):
+ruff>=0.16
+pyright>=1.1
+vulture>=2.16

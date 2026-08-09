@@ -1,0 +1,27 @@
+# ── Core UI ────────────────────────────────────────────────
+gradio==6.22.0
+python-dotenv>=1.0,<2
+
+# ── LLM providers ──────────────────────────────────────────
+groq>=1.6,<2
+ollama>=0.3,<1
+
+# ── Auth (Google id_token signature/audience verification) ────
+google-auth>=2,<3
+# app.py serves the Google OAuth endpoints (comes with gradio, pinned explicitly)
+fastapi>=0.110,<1
+
+# ── Local embeddings / retrieval (CPU-friendly) ────────────
+sentence-transformers>=5.6,<6
+chromadb>=1.5,<2
+# Direct import in live_interview.py / eval_retrieval.py (comes via torch, pinned explicitly)
+numpy>=2,<3
+# ── Fine-tuned skill classifier (tiny BERT; torch comes via sentence-transformers) ──
+# 5.x required: skill_model builds the tokenizer from a vocab dict (4.x takes vocab_file).
+transformers>=5,<6
+
+# ── PDF extraction ─────────────────────────────────────────
+pypdf>=4.0,<7
+
+# ── Hugging Face backup (free Spaces data survival — HF backup module) ──
+huggingface_hub>=0.26,<2

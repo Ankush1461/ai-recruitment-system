@@ -1,0 +1,20 @@
+# Ruff lint contract for this project.
+#
+# Extends ruff's safe defaults (E4, E7, E9, F) with the rule families the
+# codebase follows: import sorting (I), pyupgrade (UP), flake8-simplify (SIM),
+# bugbear (B), ruff-specific (RUF), implicit-concat (ISC) and refurb (FURB).
+#
+# Deliberately ignored — these are design decisions, not oversights:
+#   * BLE001 (blind `except Exception`): the resilience layer (auth rate
+#     limiting, vector cleanup, reindexing, model fallbacks, optional deps) is
+#     intentionally fail-open — best-effort paths must never break the
+#     primary flow, so the excepts stay broad and silent. S110/S112
+#     (bare except: pass / continue) are the same pattern and also ignored.
+#   * SIM117 (nested `with`): the Gradio UI nests component blocks
+#     deliberately for readability; flattening would obscure the tree.
+
+exclude = [".venv", "data", "media", "chroma_db", "exports", "__pycache__"]
+
+[lint]
+extend-select = ["I", "UP", "SIM", "B", "RUF", "ISC", "FURB"]
+ignore = ["BLE001", "S110", "S112", "SIM117"]

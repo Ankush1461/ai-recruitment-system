@@ -1,0 +1,42 @@
+name: Keep Space awake
+
+# Free keepalive: pings the deployed Hugging Face Space every 30 minutes so it
+# never idles out (free Spaces sleep after ~48h of inactivity; the ping also
+# wakes it promptly after a reboot). One tiny HTTP request per run — public
+# repos have unlimited Actions minutes; private repos use ~30-50 of the 2000
+# free minutes/month.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {} # manual run from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping the Space
+        env:
+          HF_SPACE_URL: ${{ vars.HF_SPACE_URL }}
+        run: |
+          # Prefer the repo variable; fall back to the documented placeholder.
+          url="${HF_SPACE_URL:-https://<your-username>-<space-name>.hf.space}"
+          if [ -z "${HF_SPACE_URL:-}" ]; then
+            echo "::warning::HF_SPACE_URL not set — pinging the placeholder URL. Add it as a repo variable (GitHub → Settings → Secrets and variables → Actions) to ping your real Space."
+          fi
+          echo "Pinging ${url} ..."
+          # -L follows redirects; --max-time is generous because a sleeping
+          # Space can take 1-2+ min to cold-boot before it answers.
+          code=$(curl -sS -L -o /dev/null -w "%{http_code}" --max-time 150 \
+            -A "Mozilla/5.0 (keepalive)" "$url" || true)
+          echo "Got HTTP ${code:-<no response>}"
+          # 200 = healthy. 503 = Space queued/waking on ZeroGPU — fine.
+          # 000 = curl failure/timeout during a cold boot — the next ping
+          # (30 min later) finishes waking it, so don't fail the run.
+          case "${code}" in
+            200 | 503 | 000) echo "Space is awake (or waking)." ;;
+            *)
+              echo "Unexpected status — check the Space in your HF dashboard."
+              exit 1
+              ;;
+          esac
