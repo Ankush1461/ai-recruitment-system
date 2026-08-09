@@ -57,7 +57,7 @@ class LLMClient:
         # Strip markdown fences if the model wraps JSON in ```json ... ```
         if text.startswith("```"):
             lines = text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
+            lines = [line for line in lines if not line.strip().startswith("```")]
             text = "\n".join(lines).strip()
 
         return json.loads(text)

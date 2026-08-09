@@ -3970,7 +3970,7 @@ def build_app() -> gr.Blocks:
                 return origin
         # Fallback: infer from how the app is bound.
         host = os.getenv("GRADIO_SERVER_NAME", "127.0.0.1")
-        port = os.getenv("PORT", "7861")
+        port = os.getenv("PORT", "7860")
         if os.getenv("SPACE_ID"):
             return f"https://{os.getenv('SPACE_ID')}.hf.space/"
         return f"http://{host}:{port}/"

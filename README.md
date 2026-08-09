@@ -109,8 +109,8 @@ GROQ_API_KEY="gsk_..."
 ```powershell
 python app.py
 ```
-Open **`http://127.0.0.1:7861`** — if that port is busy the app automatically falls
-back to the next free one (7862, 7863, …) and prints which port it picked.
+Open **`http://127.0.0.1:7860`** — if that port is busy the app automatically falls
+back to the next free one (7861, 7862, 7863, …) and prints which port it picked.
 
 ### 4. Create your account
 On first run the app shows a **login screen** — sign in or create an account with

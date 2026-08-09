@@ -509,17 +509,17 @@ def delete_user(user_id: str) -> bool:
         row = conn.execute(
             "SELECT email FROM users WHERE id = ?", (user_id,)
         ).fetchone()
-        if row:
-            email = row["email"] or ""
+        if not row:
+            return False
+        email = row["email"] or ""
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         if email:
             conn.execute(
                 "DELETE FROM auth_attempts WHERE scope = ?", (f"login:{email}",)
             )
-    if not row:
-        return False
-    _reindex_checked.discard(user_id)
+    with _reindex_lock:
+        _reindex_checked.discard(user_id)
     # Release this thread's handles to the user's files first so Windows can
     # actually remove the directory: the Chroma persistent client keeps
     # chroma.sqlite3 open (and thus the whole dir locked) until closed.
@@ -560,6 +560,7 @@ def user_storage(user_id: str) -> dict[str, str]:
 # store; each account's private store is checked lazily on first access so an
 # EMBEDDING_MODEL switch rebuilds every account's vectors too.
 _reindex_checked: set[str] = set()
+_reindex_lock = threading.Lock()
 
 
 def _smtp_encryption_key(user: dict | None) -> bytes | None:
@@ -610,8 +611,12 @@ def set_active_user(user: dict | None) -> None:
     # Per-user vector reindex (once per user per process): cheap when the
     # store is already on the current embedding model (one metadata read),
     # and guarded by vectorstore's own lock file when it is not.
-    if user["id"] not in _reindex_checked:
-        _reindex_checked.add(user["id"])
+    already_checked = True
+    with _reindex_lock:
+        if user["id"] not in _reindex_checked:
+            _reindex_checked.add(user["id"])
+            already_checked = False
+    if not already_checked:
         # best-effort — SQLite is the source of truth, it reindexes on demand
         with suppress(Exception):
             vectorstore.maybe_reindex_all(db_path=storage["db"])
@@ -709,12 +714,15 @@ def _maybe_migrate_legacy(user: dict) -> None:
 _GOOGLE_STATE_TTL = 600  # seconds
 # state-token -> {"verifier", "created_at"}
 _google_attempts: dict[str, dict] = {}
+_google_attempts_lock = threading.Lock()
 
 
 def _prune_google_attempts() -> None:
     now = time.time()
-    for tok in [t for t, v in _google_attempts.items() if now - v["created_at"] > _GOOGLE_STATE_TTL]:
-        _google_attempts.pop(tok, None)
+    with _google_attempts_lock:
+        to_remove = [t for t, v in _google_attempts.items() if now - v["created_at"] > _GOOGLE_STATE_TTL]
+        for tok in to_remove:
+            _google_attempts.pop(tok, None)
 
 
 def normalize_redirect_uri(raw: str) -> str:
@@ -754,11 +762,12 @@ def new_google_attempt(redirect_uri: str | None = None) -> tuple[str, str]:
     verifier, _ = new_pkce_pair()
     state = secrets.token_hex(16)
     _prune_google_attempts()
-    _google_attempts[state] = {
-        "verifier": verifier,
-        "redirect_uri": redirect_uri,
-        "created_at": time.time(),
-    }
+    with _google_attempts_lock:
+        _google_attempts[state] = {
+            "verifier": verifier,
+            "redirect_uri": redirect_uri,
+            "created_at": time.time(),
+        }
     return state, verifier
 
 
@@ -768,7 +777,8 @@ def pop_google_attempt(state: str) -> dict | None:
     """
     if not state:
         return None
-    attempt = _google_attempts.pop(state, None)
+    with _google_attempts_lock:
+        attempt = _google_attempts.pop(state, None)
     if not attempt:
         return None
     if time.time() - attempt["created_at"] > _GOOGLE_STATE_TTL:

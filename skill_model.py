@@ -296,9 +296,9 @@ def _macro_f1(preds: list[int], labels: list[int], num_labels: int) -> float:
     """Macro-averaged F1 over all classes (classes with no support count 0)."""
     f1s = []
     for c in range(num_labels):
-        tp = sum(1 for p, l in zip(preds, labels, strict=False) if p == c and l == c)
-        fp = sum(1 for p, l in zip(preds, labels, strict=False) if p == c and l != c)
-        fn = sum(1 for p, l in zip(preds, labels, strict=False) if l == c and p != c)
+        tp = sum(1 for p, lbl in zip(preds, labels, strict=False) if p == c and lbl == c)
+        fp = sum(1 for p, lbl in zip(preds, labels, strict=False) if p == c and lbl != c)
+        fn = sum(1 for p, lbl in zip(preds, labels, strict=False) if lbl == c and p != c)
         prec = tp / (tp + fp) if tp + fp else 0.0
         rec = tp / (tp + fn) if tp + fn else 0.0
         f1s.append(2 * prec * rec / (prec + rec) if prec + rec else 0.0)
@@ -345,7 +345,7 @@ def _evaluate(model, tokenizer, texts: list[str], labels: list[int], max_len: in
             logits = model(**batch).logits
             preds.extend(torch.argmax(logits, dim=-1).tolist())
     num_labels = len(categories())
-    acc = sum(1 for p, l in zip(preds, labels, strict=False) if p == l) / len(labels)
+    acc = sum(1 for p, lbl in zip(preds, labels, strict=False) if p == lbl) / len(labels)
     return acc, _macro_f1(preds, labels, num_labels)
 
 
