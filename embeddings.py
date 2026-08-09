@@ -5,6 +5,11 @@ from __future__ import annotations
 import threading
 from contextlib import suppress
 
+try:
+    import spaces  # type: ignore # noqa: F401
+except Exception:
+    pass
+
 from sentence_transformers import SentenceTransformer
 
 import config

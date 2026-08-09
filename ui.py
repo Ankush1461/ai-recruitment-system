@@ -3,6 +3,11 @@
 # ================================================================
 from __future__ import annotations
 
+try:
+    import spaces  # type: ignore # noqa: F401
+except Exception:
+    pass
+
 import functools
 import os
 import threading

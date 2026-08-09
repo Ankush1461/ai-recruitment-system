@@ -1,9 +1,9 @@
-# ================================================================
-# 🚀 Smart AI Recruiter System — Phase 2 Entrypoint
-#
-# Hugging Face Spaces friendly: reads PORT + GRADIO_SERVER_NAME so the
-# same file runs locally (127.0.0.1:7860) and on Spaces (0.0.0.0:$PORT).
-# ================================================================
+# Optional Hugging Face Spaces compatibility: spaces must be imported before
+# any CUDA/PyTorch modules, otherwise spaces.reloading throws RuntimeError.
+try:
+    import spaces  # type: ignore # noqa: F401
+except Exception:
+    pass
 
 import json
 import os
@@ -265,15 +265,16 @@ if __name__ == "__main__":
     # so candidate ingest is never blocked by model loading — ingest itself is
     # deferred to a background thread, so this only shrinks the window in
     # which a freshly ingested candidate has no vectors yet.
-    threading.Thread(target=embeddings.warm, daemon=True).start()
-    requested_port = int(os.getenv("PORT", "7861"))
+    is_hf_space = bool(os.getenv("SPACE_ID") or os.getenv("SYSTEM") == "spaces")
+    default_port = "7860" if is_hf_space else "7861"
+    requested_port = int(os.getenv("PORT", default_port))
     port = find_free_port(requested_port)
     if port != requested_port:
         print(
             f"[boot] port {requested_port} is in use (an old instance may still be "
             f"running) — starting on port {port} instead."
         )
-    server_name = os.getenv("GRADIO_SERVER_NAME", "0.0.0.0" if os.getenv("SPACE_ID") else "127.0.0.1")
+    server_name = os.getenv("GRADIO_SERVER_NAME", "0.0.0.0" if is_hf_space else "127.0.0.1")
 
     # launch() blocks, so run it in a thread and register the OAuth routes on
     # the live app once the server is up (Gradio rebuilds its FastAPI app
@@ -283,6 +284,7 @@ if __name__ == "__main__":
             server_name=server_name,
             server_port=port,
             share=os.getenv("GRADIO_SHARE", "0").lower() in ("1", "true"),
+            ssr_mode=False,
         )
 
     t = threading.Thread(target=_serve, daemon=True)
