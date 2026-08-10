@@ -87,20 +87,39 @@ def _html_page(inner: str) -> str:
     logo) in the teal header, message body below."""
     s = resolved_settings()
     company = (s.get("company_name") or "").strip() or _DEFAULT_BRAND
-    logo = _logo_data_uri(s.get("company_logo") or "")
+    logo_path = (s.get("company_logo") or "").strip()
+    has_logo = bool(logo_path and os.path.isfile(logo_path))
     brand = ""
-    if logo:
+    if has_logo:
+        # Standard RFC 2392 CID reference — Gmail & Outlook block data: URIs,
+        # but support inline CID attachments.
         brand += (
-            f'<img src="{logo}" alt="" style="height:28px;width:auto;'
+            '<img src="cid:company_logo" alt="Logo" style="height:28px;width:auto;'
             'vertical-align:middle;margin-right:10px;border-radius:4px">'
         )
     brand += html.escape(company)
     return (
-        '<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;'
-        'margin:auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">'
-        f'<div style="background:#0f766e;color:#ffffff;padding:16px 24px;'
-        f'font-size:18px;font-weight:700">{brand}</div>'
-        f'<div style="padding:24px;color:#0f172a">{inner}</div></div>'
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<style>'
+        '@media only screen and (max-width:480px){'
+        '.email-shell{border-radius:0!important;border-left:0!important;border-right:0!important}'
+        '.email-header{padding:12px 16px!important;font-size:15px!important}'
+        '.email-header img{height:22px!important}'
+        '.email-body{padding:16px!important}'
+        '.email-body p{font-size:14px!important;line-height:1.6!important}'
+        '}'
+        '</style></head><body style="margin:0;padding:0;background:#f1f5f9">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"'
+        ' style="background:#f1f5f9"><tr><td align="center" style="padding:24px 12px">'
+        '<table role="presentation" class="email-shell" cellpadding="0" cellspacing="0"'
+        ' style="max-width:560px;width:100%;font-family:Arial,Helvetica,sans-serif;'
+        'border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#ffffff">'
+        '<tr><td class="email-header" style="background:#0f766e;color:#ffffff;'
+        f'padding:16px 24px;font-size:18px;font-weight:700">{brand}</td></tr>'
+        f'<tr><td class="email-body" style="padding:24px;color:#0f172a;'
+        f'font-size:15px;line-height:1.7">{inner}</td></tr>'
+        '</table></td></tr></table></body></html>'
     )
 
 
@@ -317,6 +336,30 @@ def build_invite_email(
     return subject, _html_page(inner)
 
 
+def build_test_email(extra_msg: str = "") -> tuple[str, str]:
+    """(subject, html_body) for an SMTP connectivity test.
+
+    Uses the exact same branded shell as the real shortlist / interview
+    emails (company name + logo in the header) so the test shows what
+    recipients would actually receive — only the body is a simple test
+    message.
+    """
+    inner = (
+        _p("This is a test email from your recruiting account.")
+        + _p(
+            "If you are reading this, your SMTP settings work correctly — "
+            "emails from this account are ready to send."
+        )
+        + (
+            f"<p style='padding:12px;background:#f0fdfa;border-left:3px solid #0f766e'>{html.escape(extra_msg)}</p>"
+            if extra_msg
+            else ""
+        )
+        + _p("Best regards,<br/>The TalentIQ Recruiting Team")
+    )
+    return "TalentIQ — test email", _html_page(inner)
+
+
 def _text_version(html_body: str) -> str:
     return " ".join(re.sub(r"<[^>]+>", " ", html_body).split())
 
@@ -344,7 +387,33 @@ def send_email(to: str, subject: str, body_html: str) -> dict:
     msg["From"] = f"{s['mail_from_name']} <{s['mail_from']}>"
     msg["To"] = to
     msg.set_content(_text_version(body_html))
-    msg.add_alternative(body_html, subtype="html")
+    logo_path = (s.get("company_logo") or "").strip()
+    if logo_path and os.path.isfile(logo_path):
+        try:
+            with open(logo_path, "rb") as f:
+                logo_data = f.read()
+            if logo_data:
+                mime_type, _ = mimetypes.guess_type(logo_path)
+                maintype, subtype = (mime_type or "image/png").split("/", 1)
+                # Add HTML alternative part (multipart/alternative)
+                msg.add_alternative(body_html, subtype="html")
+                # Add inline CID image to the HTML part (nested multipart/related)
+                html_part = msg.get_payload(1)
+                add_rel = getattr(html_part, "add_related", None)
+                if callable(add_rel):
+                    add_rel(
+                        logo_data,
+                        maintype=maintype,
+                        subtype=subtype,
+                        cid="<company_logo>",
+                    )
+            else:
+                msg.add_alternative(body_html, subtype="html")
+        except Exception as err:
+            print(f"[email] warning: could not attach inline logo: {err}")
+            msg.add_alternative(body_html, subtype="html")
+    else:
+        msg.add_alternative(body_html, subtype="html")
     try:
         with smtplib.SMTP(s["host"], int(s["port"] or 587), timeout=25) as conn:
             if s["starttls"]:

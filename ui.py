@@ -1464,7 +1464,7 @@ def _email_banner_update(s: dict | None = None, cfg: dict | None = None) -> dict
 
 
 def _email_settings_refresh(msg: str = "") -> tuple:
-    """The 9 Email-settings outputs (7 form values + status + banner). `msg`
+    """The 11 Email-settings outputs (9 form values + status + banner). `msg`
     (e.g. a save confirmation) is folded into the status line so the form's
     feedback and the config status share one visible output."""
     s = emailer.resolved_settings()
@@ -1595,16 +1595,16 @@ def _persist_company_logo(logo_path) -> str:
     return dest
 
 
-@_require_session
-def on_save_email_settings(
-    token, host, port, mail_from, mail_from_name, user, password, starttls,
+def _save_email_settings_form(
+    host, port, mail_from, mail_from_name, user, password, starttls,
     company_name, logo_path,
-):
-    """Persist this account's SMTP + branding settings and confirm."""
+) -> tuple[bool, str, str]:
+    """Persist the Email-settings form (SMTP + branding). Returns
+    (saved, error_msg, logo_dest) — error_msg is non-empty when saved is False."""
     try:
         logo_dest = _persist_company_logo(logo_path)
     except ValueError as e:
-        return _email_settings_refresh(f"**Logo not saved:** {e}")
+        return False, f"**Logo not saved:** {e}", ""
     db.save_email_settings(
         host=host or "",
         port=port or 587,
@@ -1616,6 +1616,21 @@ def on_save_email_settings(
         company_name=company_name or "",
         company_logo=logo_dest,
     )
+    return True, "", logo_dest
+
+
+@_require_session
+def on_save_email_settings(
+    token, host, port, mail_from, mail_from_name, user, password, starttls,
+    company_name, logo_path,
+):
+    """Persist this account's SMTP + branding settings and confirm."""
+    ok, err, logo_dest = _save_email_settings_form(
+        host, port, mail_from, mail_from_name, user, password, starttls,
+        company_name, logo_path,
+    )
+    if not ok:
+        return _email_settings_refresh(err)
     msg = (
         "Saved — this account now sends from "
         f"**{mail_from or '(no from-address)'}** via **{host or '(no host)'}**."
@@ -1640,22 +1655,33 @@ def on_clear_email_settings(token):
 
 
 @_require_session
-def on_test_email_settings(token, recipient):
-    """Send a test email through the active SMTP config to verify it works."""
+def on_test_email_settings(
+    token, host, port, mail_from, mail_from_name, user, password, starttls,
+    company_name, logo_path, recipient,
+):
+    """Save the settings form first — the test always runs against the exact
+    config shown in the bubble — then send a test email through it."""
+    ok, err, _ = _save_email_settings_form(
+        host, port, mail_from, mail_from_name, user, password, starttls,
+        company_name, logo_path,
+    )
+    if not ok:
+        return _email_settings_refresh(err)
     to = (recipient or "").strip() or (auth.active_user() or {}).get("email", "")
     if not to or "@" not in to:
         return _email_settings_refresh(
-            "Enter a test recipient (or leave empty to use your account email)."
+            "Settings saved — now enter a test recipient (or leave empty to "
+            "use your account email) and click **Send test email** again."
         )
     if not emailer.is_configured():
         return _email_settings_refresh("Configure a host and from-address first.")
-    res = emailer.send_email(
-        to, "TalentIQ — test email", "<p>Your SMTP settings work! ✓</p>"
-    )
+    subject, body = emailer.build_test_email()
+    res = emailer.send_email(to, subject, body)
     if not res["ok"]:
         return _email_settings_refresh(f"**Test failed:** {res['error']}")
     return _email_settings_refresh(
-        f"Test email sent to **{to}** — check the inbox (and spam folder)."
+        "Settings saved, then test email sent to "
+        f"**{to}** — check the inbox (and spam folder)."
     )
 
 
@@ -1708,14 +1734,18 @@ def _es_username_autofill(host: str, from_addr: str, username: str) -> dict:
 
 
 @_require_session
-def _on_es_host_change(token, host, from_addr, username):
+def _on_es_host_change(token, host, from_addr, username, port):
     """Auto-fill the SMTP port when a known provider is picked from the
-    dropdown (custom hosts keep whatever port is currently in the field) and
-    mirror the from-address into the username for email-login providers."""
+    dropdown, and default to 587 whenever the port is empty (custom hosts too)
+    so the field never sits blank. Mirrors the from-address into the username
+    for email-login providers."""
     host = (host or "").strip().lower()
-    port_update = (
-        gr.update(value=_SMTP_PROVIDERS[host]) if host in _SMTP_PROVIDERS else gr.update()
-    )
+    if host in _SMTP_PROVIDERS:
+        port_update = gr.update(value=_SMTP_PROVIDERS[host])
+    elif not port:
+        port_update = gr.update(value=587)
+    else:
+        port_update = gr.update()
     return port_update, _es_username_autofill(host, from_addr, username)
 
 
@@ -2358,7 +2388,7 @@ input[type="checkbox"], input[type="radio"] {
   background: rgba(255,255,255,0.92) !important;
   border: 1px solid var(--line) !important;
   border-radius: 16px !important;
-  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.05) !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04) !important;
 }
 .nav-pills label {
   cursor: pointer;
@@ -2382,7 +2412,7 @@ input[type="checkbox"], input[type="radio"] {
   background: var(--brand) !important;
   border-color: var(--brand) !important;
   color: #fff !important;
-  box-shadow: 0 6px 16px rgba(15, 118, 110, 0.28);
+  box-shadow: 0 2px 6px rgba(15, 118, 110, 0.18);
 }
 .nav-pills input[type="radio"] {
   position: absolute;
@@ -2886,6 +2916,7 @@ html {
     font-size: 0.8rem;
     flex: 1 1 auto;
   }
+  /* Stack side-by-side panels vertically */
   .app-row {
     flex-direction: column !important;
     gap: 0.6rem !important;
@@ -2898,7 +2929,43 @@ html {
     flex-direction: column !important;
     gap: 0.4rem !important;
   }
-  .panel { padding: 0.3rem !important; }
+  .panel { padding: 0.6rem !important; }
+  /* Email settings & profile popups shrink to fit */
+  .email-settings-pop { width: 380px; right: 5px; }
+  .profile-pop { width: 340px; right: 8px; }
+  /* KPI grid: 3 columns on tablets */
+  .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+  /* Session bar wraps gracefully */
+  .session-bar { flex-wrap: wrap; gap: 0.5rem; }
+}
+
+@media (max-width: 768px) {
+  /* Tighter container padding on smaller tablets */
+  .brand-hero { padding: 1rem 0.8rem 0.8rem; margin-bottom: 0.7rem; border-radius: 14px; }
+  .brand-hero h1 { font-size: 1.35rem !important; }
+  .brand-hero .tagline { font-size: 0.9rem; }
+  /* Buttons become full-width in stacked layouts */
+  button { min-height: 36px !important; padding: 0.4rem 0.9rem !important; font-size: 0.85rem !important; }
+  /* Tables get horizontal scroll treatment */
+  .table-wrap { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
+  table { font-size: 0.82rem; }
+  th { padding: 0.4rem 0.6rem !important; }
+  td { padding: 0.4rem 0.6rem !important; }
+  /* Chatbot shrinks for more screen real estate */
+  .chatbot { height: 380px !important; }
+  /* Auth view: tighter padding */
+  .auth-view { padding: 1.4rem 1.5rem 1.5rem !important; max-width: 400px !important; }
+  .auth-hero h1 { font-size: 1.6rem; }
+  /* KPI grid: 2 columns */
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .kpi { padding: 0.65rem 0.8rem; }
+  .kpi-num { font-size: 1.35rem; }
+  /* Popups go full-width */
+  .email-settings-pop { width: calc(100% - 20px); left: 10px; right: 10px; }
+  .profile-pop { width: calc(100% - 24px); left: 12px; right: 12px; }
+  /* AI loader: tighter */
+  .ai-loader { padding: 0.75rem 0.9rem; gap: 0.6rem; }
+  .ai-loader .loader-text { font-size: 0.85rem; }
 }
 
 @media (max-width: 640px) {
@@ -2916,19 +2983,142 @@ html {
   .form { flex: 1 1 100% !important; min-width: 100% !important; }
   .tab-body { animation: fadeSlide 0.15s ease; }
   .markdown p, .markdown li { font-size: 0.82rem; }
+  .prose p, .prose li { font-size: 0.82rem; }
   table { font-size: 0.78rem; }
   /* body cells wrap on small screens; headers keep their single-line look */
   td { white-space: normal !important; }
   .chatbot { height: 340px !important; }
   .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  /* Dropdowns & inputs smaller */
+  input, textarea, select { font-size: 0.88rem !important; }
+  /* Panel tighter borders */
+  .panel { border-radius: 12px !important; padding: 0.5rem !important; }
+  /* Badges scale down */
+  .badge { font-size: 0.65rem; padding: 0.12rem 0.5rem; }
+  /* Status notes compact */
+  .status-note.prose:not(:empty) { padding: 0.55rem 0.7rem; font-size: 0.85rem; }
+  /* Email warn banner */
+  .email-warn.prose:not(:empty) { padding: 0.55rem 0.7rem; }
+  /* Auth view mobile */
+  .auth-view { padding: 1.2rem 1.2rem 1.4rem !important; margin: 3vh auto 0 auto !important; }
+  .auth-hero h1 { font-size: 1.45rem; }
+  .auth-hero .tagline { font-size: 0.82rem; }
+  .auth-divider { margin: 0.8rem 0 0.7rem 0; font-size: 0.72rem; }
+  .google-btn { font-size: 0.88rem; padding: 0.5rem 0.85rem; }
+  /* Session bar stacks */
+  .session-bar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.4rem;
+  }
+  .user-badge { text-align: center; font-size: 0.78rem; }
+  /* Profile icon stays accessible */
+  .profile-icon-btn {
+    min-width: 2.2rem !important;
+    max-width: 2.2rem !important;
+    height: 2.2rem !important;
+    font-size: 0.95rem !important;
+  }
+  /* Workspace footer */
+  .workspace-foot { font-size: 0.74rem; padding: 1rem 0 0.3rem; }
+  /* Screening report headings */
+  .markdown h3, .prose h3 { font-size: 0.92rem !important; }
+  .markdown h4, .prose h4 { font-size: 0.88rem !important; }
+  /* AI loader compact */
+  .ai-loader { padding: 0.65rem 0.75rem; gap: 0.5rem; border-radius: 10px; }
+  .ai-loader .spinner { width: 22px; height: 22px; }
+  .ai-loader .loader-text { font-size: 0.82rem; }
 }
 
 @media (max-width: 480px) {
   .nav-pills .wrap { gap: 0.2rem; padding: 0.25rem; }
   .nav-pills label { font-size: 0.68rem; padding: 0.4rem 0.35rem; }
-  .panel { border-radius: 12px !important; }
-  .markdown h3 { font-size: 0.92rem !important; }
+  .panel { border-radius: 10px !important; padding: 0.4rem !important; }
+  .markdown h3 { font-size: 0.88rem !important; }
   .workspace-foot { font-size: 0.72rem; }
+  /* Brand hero ultra-compact */
+  .brand-hero {
+    padding: 0.8rem 0.7rem 0.7rem;
+    border-radius: 12px;
+    margin-bottom: 0.5rem;
+  }
+  .brand-hero h1 { font-size: clamp(1rem, 5vw, 1.2rem) !important; letter-spacing: -0.03em; }
+  .brand-hero .tagline { font-size: 0.78rem; }
+  .brand-hero .hero-badge { font-size: 0.55rem; padding: 0.15rem 0.4rem; margin-top: 0.5rem; }
+  /* Buttons: full-width, compact */
+  button {
+    min-height: 34px !important;
+    padding: 0.35rem 0.7rem !important;
+    font-size: 0.82rem !important;
+    border-radius: 8px !important;
+  }
+  /* KPI: 2 columns, tighter */
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
+  .kpi { padding: 0.55rem 0.7rem; border-radius: 10px; }
+  .kpi-num { font-size: 1.2rem; }
+  .kpi-label { font-size: 0.65rem; }
+  /* Tables super-compact */
+  table { font-size: 0.74rem; }
+  th { padding: 0.35rem 0.5rem !important; font-size: 0.72rem; }
+  td { padding: 0.35rem 0.5rem !important; }
+  /* Chatbot shorter */
+  .chatbot { height: 300px !important; }
+  /* Auth view phone */
+  .auth-view {
+    max-width: calc(100% - 1rem) !important;
+    margin: 2vh auto 0 auto !important;
+    padding: 1rem 1rem 1.2rem !important;
+    border-radius: 14px !important;
+  }
+  .auth-hero h1 { font-size: 1.3rem; }
+  .auth-mode label { font-size: 0.78rem; padding: 0.35rem 0.4rem !important; }
+  /* Inputs smaller */
+  input, textarea, select { font-size: 0.84rem !important; }
+  /* Email settings full screen on phone */
+  .email-settings-pop {
+    position: fixed;
+    top: 10px; left: 10px; right: 10px;
+    width: auto;
+    max-height: calc(100vh - 20px);
+    overflow-y: auto;
+    border-radius: 12px;
+    z-index: 100;
+  }
+  .profile-pop {
+    position: fixed;
+    top: 10px; left: 10px; right: 10px;
+    width: auto;
+    max-height: calc(100vh - 20px);
+    overflow-y: auto;
+    border-radius: 12px;
+    z-index: 100;
+  }
+  /* Scrollbar thinner on mobile */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+}
+
+@media (max-width: 360px) {
+  /* Ultra-narrow phones (Galaxy S series, older iPhones) */
+  .brand-hero { padding: 0.6rem; border-radius: 10px; }
+  .brand-hero h1 { font-size: 1rem !important; }
+  .brand-hero .tagline { font-size: 0.72rem; }
+  .nav-pills label { font-size: 0.62rem; padding: 0.35rem 0.25rem; }
+  .panel { padding: 0.3rem !important; border-radius: 8px !important; }
+  button { font-size: 0.78rem !important; padding: 0.3rem 0.5rem !important; min-height: 32px !important; }
+  .kpi-grid { grid-template-columns: 1fr 1fr; gap: 0.4rem; }
+  .kpi-num { font-size: 1.05rem; }
+  .kpi-label { font-size: 0.6rem; }
+  .auth-view { padding: 0.8rem !important; }
+  .auth-hero h1 { font-size: 1.15rem; }
+  .chatbot { height: 260px !important; }
+  table { font-size: 0.7rem; }
+  .workspace-foot { font-size: 0.68rem; }
+  .status-note.prose:not(:empty) { padding: 0.45rem 0.55rem; font-size: 0.8rem; }
+  .ai-loader { padding: 0.5rem 0.6rem; }
+  .ai-loader .spinner { width: 18px; height: 18px; }
+  .ai-loader .loader-text { font-size: 0.78rem; }
+  .badge { font-size: 0.6rem; padding: 0.1rem 0.4rem; }
 }
 
 /* ===== Login / account gate ===== */
@@ -4033,7 +4223,7 @@ def build_demo() -> gr.Blocks:
         # way (only when the username is still empty).
         es_host.change(
             fn=_on_es_host_change,
-            inputs=[session_token, es_host, es_from, es_user],
+            inputs=[session_token, es_host, es_from, es_user, es_port],
             outputs=[es_port, es_user],
         )
         es_from.change(
@@ -4056,7 +4246,10 @@ def build_demo() -> gr.Blocks:
         )
         es_test_btn.click(
             fn=on_test_email_settings,
-            inputs=[session_token, es_test_to],
+            inputs=[
+                session_token, es_host, es_port, es_from, es_from_name,
+                es_user, es_pass, es_starttls, es_company, es_logo, es_test_to,
+            ],
             outputs=_es_outputs,
         )
         # The ⚙️ button opens the floating settings bubble; ✕ Close hides it,
