@@ -11,8 +11,8 @@ ssr_mode: false
 ---
 
 
-# 💼 Smart AI Recruiter System (RAG Edition)
-### 🚀 Phase 2 — Mini-ATS: Jobs · Corpus Ranking · Rubric Screening · Multi-turn Interview
+# 💼 Smart AI Recruiter System (TalentIQ)
+### 🚀 Production-Grade RAG Mini-ATS: Multi-User Identity · Hybrid Corpus Ranking · Rubric Screening · Live AI Interviewing · Custom Email Engine
 
 ![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Gradio](https://img.shields.io/badge/UI-Gradio_6-orange)
@@ -21,286 +21,208 @@ ssr_mode: false
 ![Embeddings](https://img.shields.io/badge/Embeddings-Multilingual_MiniLM--L12-yellow)
 ![Rerank](https://img.shields.io/badge/Rerank-CrossEncoder_mmarco-orange)
 ![LLM Model](https://img.shields.io/badge/Model-Groq_Llama--3.3--70B-purple)
+![Skill Classifier](https://img.shields.io/badge/Classifier-Fine--Tuned_BERT-red)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-The **Smart AI Recruiter System** is an end-to-end recruitment automation platform built with **Python**, **Gradio**, **ChromaDB**, **SQLite**, **Sentence-Transformers**, and **Groq AI (Llama 3.3 70B)** with **Ollama local fallback**.
+The **Smart AI Recruiter System (TalentIQ)** is a full-stack, production-grade recruitment automation platform and Mini-ATS. It combines **Retrieval-Augmented Generation (RAG)**, **hybrid dense/sparse vector search**, **fine-tuned transformer skill classification**, **multi-turn AI interview simulation**, **live meeting transcription**, and **per-account branded email automation**.
 
-> 📘 **Full documentation:** see **[`MANUAL.md`](MANUAL.md)** for the complete project manual — every file, the AI pipeline, the end-to-end user flow, and developer notes.
->
-> 🎤 **Interview prep:** see **[`INTERVIEW.md`](INTERVIEW.md)** — a question-and-answer bank covering every part of the system, with the exact numbers, measured results, and bug stories to back each answer.
-
-**Phase 1** added RAG evidence retrieval. **Phase 2** turns that into a mini-ATS workflow: persist jobs/candidates, **multi-job hybrid shortlists**, deep-screen with a weighted rubric, edit/remove candidates, run a multi-turn interview, and export per-job CSV hiring reports.
+> 📘 **Full Manual & Architecture:** See **[`MANUAL.md`](MANUAL.md)** for exhaustive technical documentation, data models, API flows, and developer guides.
 
 ---
 
-## 🏗️ System Architecture
+## 🌟 Key System Capabilities
+
+### 🔐 1. Multi-User Identity & Account Isolation
+- **Authentication**: Email/password authentication (PBKDF2 with SHA-256 + salt) and **Google OAuth 2.0 PKCE** redirect flow.
+- **Session Management**: Persistent HTTP session tokens stored in browser cookies with 30-day automatic expiration (`users.db`).
+- **Data Isolation**: Each user account gets a dedicated private data directory (`data/users/<user_id>/`) containing its own `recruiter.db` (SQLite), `chroma_db/` (vector store), `exports/` (CSV reports), and `logos/` (branding assets). No account can ever access another user's candidate pool or jobs.
+
+### 💼 2. Job Requisition & Talent Pool Management
+- **Job Requisitions**: Full job description management with unique requisition IDs (`REQ-xxxx`), required skills, experience levels, and custom evaluation criteria.
+- **Resume Ingestion**: Ingest candidate resumes via PDF upload (`pypdf` extraction) or plain text.
+- **Per-Job Isolation**: Resumes are linked strictly to specific job pipelines, preventing cross-job candidate pollution.
+
+### 🧬 3. Hybrid Ranking & Fine-Tuned Skill Category Fallback
+- **Hybrid Scoring**: Combines **70% semantic vector similarity** (Multilingual MiniLM-L12) + **30% keyword overlap**.
+- **Cross-Encoder Reranking**: Reranks top hits using `mmarco-mMiniLMv2-L12-H384-v1` for high-precision retrieval across English and German.
+- **Fine-Tuned BERT Skill Classifier**: Includes a custom-trained PyTorch BERT model (`skill_model.py`) that classifies skill phrases into 10 categories. When literal keyword overlap is zero (e.g., JD specifies "Amazon Web Services", candidate resume lists "AWS"), the system falls back to category-level matching.
+
+### 🧠 4. RAG Rubric Screening
+- **Evidence-Based Evaluation**: Retrieves relevant candidate resume chunks to score candidates against a weighted 4-dimension rubric:
+  - **Must-have skills (40%)** — *Hard gate: must score ≥ 4/10 to pass*
+  - **Relevant experience (25%)**
+  - **Projects & impact (20%)**
+  - **Education & extras (15%)**
+- **Automated Verdict**: Computes an overall score (Pass threshold ≥ 55/100) and saves structured JSON evidence with strength/weakness bullet points.
+
+### 🎤 5. AI-Powered Technical Interviewing (Chat & Live Meeting)
+- **Multi-Turn Chat Interview**: Conducts multi-turn technical interviews grounded in job requirements and candidate resume evidence, supporting both **English and German**.
+- **Live Jitsi Meeting & Mic Transcription**: Generates on-demand Jitsi meeting links and streams browser microphone audio to Groq Whisper (`whisper-large-v3-turbo`) for real-time live transcriptions.
+- **Automated Interview Evaluation**: Evaluates candidate responses post-interview to generate final hiring recommendations.
+
+### ✉️ 6. Custom Email Automation & Branding
+- **Per-Account SMTP Settings**: Configure custom SMTP credentials (Gmail, Outlook, custom SMTP) per user account.
+- **Custom Templates & Preferred Defaults**: Create, edit, and store custom HTML email templates for Shortlist Notifications and Interview Invites with dynamic placeholders (`{{name}}`, `{{job_title}}`, `{{req_id}}`, `{{message}}`, `{{invite_link}}`).
+- **Company Branding**: Upload company logos and customize company header branding directly in emails.
+
+### 📊 7. Reporting & Data Resilience
+- **CSV Hiring Reports**: Export per-job hiring reports (`exports/`) containing candidate rankings, hybrid scores, rubric screening verdicts, and interview outcomes.
+- **Automated Dataset Backup**: `backup.py` archives `users.db` and user directories into a private Hugging Face Dataset repository every 30 minutes, guaranteeing zero data loss on ephemeral cloud deployments.
+
+---
+
+## 🏗️ End-to-End System Architecture
 
 ```mermaid
 flowchart TD
-    A[📄 Batch PDF / Sample Resumes] --> B[💼 Create Job JD]
-    B --> C[✂️ chunking.py]
-    C --> D[🧬 embeddings.py]
-    D --> E[🗄️ vectorstore.py + db.py SQLite]
-    E --> F[📊 ranking.py Per-job Hybrid Shortlists]
-    F --> G[🧠 screening.py Rubric RAG Screen]
-    G --> H{PASS?}
-    H -- No --> I[📋 Stored FAIL + History]
-    H -- Yes --> J[🎤 interview.py Multi-turn Chat]
-    J --> K[📊 RAG-Grounded Eval]
-    K --> L[📤 Per-Job CSV Hiring Report]
+    A[📄 Candidate PDF / Text Resumes] --> B[💼 Job Description Creation]
+    B --> C[✂️ Section-Aware Chunker chunking.py]
+    C --> D[🧬 Multilingual Embeddings embeddings.py]
+    D --> E[🗄️ Vector Store vectorstore.py + SQLite db.py]
+    E --> F[📊 Hybrid Ranker ranking.py + BERT Skill Classifier skill_model.py]
+    F --> G[🔀 Multilingual Reranker rerank.py]
+    G --> H[🧠 Rubric RAG Screening screening.py]
+    H --> I{Screening Verdict?}
+    I -- FAIL --> J[📋 Stored Fail Verdict & Audit History]
+    I -- PASS --> K[🎤 AI Interview Engine interview.py / live_interview.py]
+    K --> L[✉️ Custom Email Engine emailer.py]
+    K --> M[📊 Final RAG Interview Evaluation]
+    M --> N[📤 Per-Job CSV Hiring Report reports.py]
 ```
 
-### Module Breakdown
+### File & Module Breakdown
 
-| Module | File | Purpose |
+| Module | File | Primary Responsibility |
 | :--- | :--- | :--- |
-| **Entrypoint** | `app.py` | Launches Gradio on `http://127.0.0.1:7861` (auto-falls back to the next free port if busy). Restores data from the HF backup dataset before the DBs open, then starts the backup timer. |
-| **HF Backup** | `backup.py` | Free HF Spaces data survival: tars `users.db` + `data/users/` and pushes to a **private dataset repo** on a timer; restores on boot when the disk is empty. Fail-open no-op without `HF_TOKEN` + `HF_BACKUP_REPO`. |
-| **Keepalive** | `.github/workflows/keepalive.yml` | Free GitHub Actions cron that pings the Space URL every 30 min so it never sleeps; UptimeRobot alternative in MANUAL §9. |
-| **UI Layer** | `ui.py` | TalentIQ workspace: Jobs → Talent pool → Shortlist → Email → Interview (chat **or** live meeting — free link + live transcript) → History & export. A 👤 icon in the top bar opens the **Profile** bubble (rename, log out, delete account). |
-| **Reporting** | `reports.py` | Per-job CSV hiring reports (`exports/`). |
-| **Persistence** | `db.py` | SQLite: jobs, candidates, shortlists, screenings, interviews, video_interviews, audit_log. |
-| **Accounts** | `auth.py` | Email/password + Google sign-in (standard redirect flow with PKCE — no code entry); each account's data is isolated in its own private storage. |
-| **Ranking** | `ranking.py` | Per-job hybrid shortlists (70% semantic + 30% keyword); batch multi-job rank. |
-| **Rubric** | `rubric.py` | Weighted dimensions + must-have skills gate. |
-| **Interview** | `interview.py` | Multi-turn chat, optional follow-ups, DB-backed transcript/eval — questions & feedback in **English or German** (per-interview language selector). |
-| **Live Interview** | `live_interview.py` | Free **Jitsi** meeting links (rooms created on demand) + browser-mic **live transcript** (Groq Whisper in rolling chunks) → Q&A pairs → same RAG evaluator (evaluation in the selected language). |
-| **Email** | `emailer.py` | Shortlist notifications + interview invites (optional invite link) over your own free SMTP (Gmail app password). **Each account saves its own SMTP config** (Email tab → ⚙️ Email settings bubble — no `.env` fallback). |
-| **RAG Screening** | `screening.py` | Retrieve → rubric JSON → persist screening row. |
-| **LLM Engine** | `llm.py` | Groq (`llama-3.3-70b-versatile`) with Ollama fallback. |
-| **Vector Store** | `vectorstore.py` | ChromaDB persistence + cosine search. |
-| **Reranker** | `rerank.py` | Multilingual cross-encoder `mmarco-mMiniLMv2-L12-H384-v1`. |
-| **Retrieval Eval** | `eval_retrieval.py` | Offline evaluation of retrieval quality: labeled resume↔JD set, `recall@k` / `MRR` / `NDCG@k` with and without the reranker (`python eval_retrieval.py`). |
-| **Skill Classifier** | `skill_model.py` | **Fine-tuned** tiny-BERT skill classifier (train with `python skill_model.py`) — ranking falls back to skill-category matching when literal keyword overlap is zero (JD says "Amazon Web Services", resume says "AWS"). Fail-open. |
-| **Embeddings** | `embeddings.py` | Local multilingual MiniLM-L12 (`paraphrase-multilingual-MiniLM-L12-v2`). |
-| **Chunker** | `chunking.py` | Section-aware resume split + JD requirements. |
-| **PDF Extractor** | `pdf.py` | `pypdf`. |
-| **Sample Data** | `sample_data.py` | JD templates that only fill the create-job form. |
-
-### Rubric Weights
-
-| Dimension | Weight | Notes |
-| :--- | ---: | :--- |
-| Must-have skills | 40% | Hard gate: must score ≥ 4/10 for PASS |
-| Relevant experience | 25% | |
-| Projects / impact | 20% | |
-| Education / extras | 15% | |
-| **PASS threshold** | **≥ 55/100** | Plus must-have gate |
-
-Hybrid ranking (no LLM): `0.7 * semantic + 0.3 * keyword` — use to shortlist, then deep-screen top N.
+| **Entrypoint** | [`app.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/app.py) | Application entrypoint. Configures port binding (7860 HF / 7861 local), registers OAuth endpoints, executes early `spaces` imports, and launches Gradio server. |
+| **UI Layer** | [`ui.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/ui.py) | Complete Gradio 6 workspace UI: Jobs, Talent Pool, Shortlist, Email Automation, Templates, Interview Chat, Live Meeting, and Profile drawer. |
+| **Authentication** | [`auth.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/auth.py) | Account authentication (Email/Password + Google OAuth 2.0 PKCE), session token resolution, and user storage path isolation (`users.db`). |
+| **Database Persistence** | [`db.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/db.py) | SQLite database layer: schemas and queries for jobs, candidates, shortlists, screenings, chat interviews, live meetings, email templates, and audit logs. |
+| **Ranking Engine** | [`ranking.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/ranking.py) | Per-job hybrid search algorithm (0.7 vector + 0.3 keyword) + skill category fallback. |
+| **Rubric Evaluator** | [`rubric.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/rubric.py) | Defines the 4-dimension weighted evaluation rubric and must-have skill hard gate logic. |
+| **RAG Screening** | [`screening.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/screening.py) | RAG context retrieval, LLM rubric evaluation prompt construction, and screening verdict persistence. |
+| **Chat Interview** | [`interview.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/interview.py) | Multi-turn technical interview dialog manager, follow-up detection, and transcript evaluation in English or German. |
+| **Live Interview** | [`live_interview.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/live_interview.py) | On-demand Jitsi meeting room generation + real-time browser mic streaming to Groq Whisper API. |
+| **Email Automation** | [`emailer.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/emailer.py) | Per-account SMTP client, custom HTML email template renderer, company logo embedder, and delivery logger. |
+| **LLM Interface** | [`llm.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/llm.py) | Unified Groq API interface (`llama-3.3-70b-versatile`) with local Ollama fallback support. |
+| **Vector Database** | [`vectorstore.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/vectorstore.py) | ChromaDB wrapper for dense vector indexing, candidate deletion, and cosine distance search. |
+| **Embeddings** | [`embeddings.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/embeddings.py) | SentenceTransformers wrapper for `paraphrase-multilingual-MiniLM-L12-v2` with `@spaces.GPU` decorator. |
+| **Reranker** | [`rerank.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/rerank.py) | Cross-encoder reranking via `mmarco-mMiniLMv2-L12-H384-v1` with `@spaces.GPU` decorator. |
+| **Skill Classifier** | [`skill_model.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/skill_model.py) | Fine-tuned PyTorch BERT skill classification model (10 categories) for zero-keyword fallback matching. |
+| **Retrieval Benchmark** | [`eval_retrieval.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/eval_retrieval.py) | Information Retrieval evaluation suite calculating Recall@k, MRR, and NDCG@k metrics. |
+| **CSV Reports** | [`reports.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/reports.py) | Generates per-job CSV hiring summaries containing scores, screening verdicts, and interview outcomes. |
+| **PDF Processing** | [`pdf.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/pdf.py) | PDF text extraction using `pypdf`. |
+| **Text Chunking** | [`chunking.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/chunking.py) | Section-aware resume chunking and job description parser. |
+| **Data Backup** | [`backup.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/backup.py) | Background task that tars user databases and uploads them to a private Hugging Face Dataset repo. |
+| **Keepalive Automation** | `.github/workflows/keepalive.yml` | GitHub Actions workflow that pings the Space URL every 30 minutes to prevent container sleep. |
 
 ---
 
-## 🚀 Quickstart Guide
+## ⚖️ Rubric Weights & Scoring Gates
 
-### 1. Activate Environment & Install Dependencies
+| Dimension | Weight | Operational Logic |
+| :--- | :---: | :--- |
+| **Must-Have Skills** | **40%** | **Hard Gate**: Candidate must score $\ge 4.0 / 10.0$ to pass screening regardless of total score. |
+| **Relevant Experience** | **25%** | Evaluates years of experience, direct domain relevance, and role progression. |
+| **Projects & Impact** | **20%** | Evaluates practical deliverables, scale, architecture complexity, and key metrics. |
+| **Education & Extras** | **15%** | Evaluates academic background, certifications, domain training, and publications. |
+| **Final PASS Threshold** | **$\ge 55 / 100$** | **PASS Verdict** requires Total Weighted Score $\ge 55$ **AND** Must-Have Skills Gate passed. |
+
+---
+
+## 🧪 Machine Learning & Evaluation Suite
+
+### 1. Offline Retrieval Quality Evaluator (`eval_retrieval.py`)
+Evaluates search performance across a labeled dataset of resumes and queries using standard IR metrics:
+
 ```powershell
+python eval_retrieval.py               # Evaluates Recall@5, MRR, NDCG@5 with & without reranker
+python eval_retrieval.py --k 3         # Top-3 evaluation
+python eval_retrieval.py --verbose     # Detailed per-query breakdown
+```
+
+- **Recall@k**: Percentage of ground-truth relevant resumes retrieved in top-k hits.
+- **MRR (Mean Reciprocal Rank)**: Evaluates how early the first relevant hit appears.
+- **NDCG@k**: Normalized Discounted Cumulative Gain assessing ranking order quality.
+
+### 2. Fine-Tuned Skill Classifier (`skill_model.py`)
+Trains a custom BERT model on a hand-labeled dataset of skill phrases across 10 categories:
+
+```powershell
+python skill_model.py        # Train model & save weights to data/skill_model/
+python skill_model.py --check# Test classification on sample skill phrases
+```
+
+When literal keyword overlap between a job requirement and a resume is zero, the hybrid ranker queries this model to match skill categories (e.g., mapping "PostgreSQL" $\rightarrow$ "Databases" $\leftarrow$ "Postgres").
+
+---
+
+## ⚡ Quickstart & Local Setup
+
+### 1. Clone & Setup Virtual Environment
+```powershell
+git clone https://github.com/Ankush1461/ai-recruitment-system.git
+cd ai-recruitment-system
+python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Set Groq API Key
-Put the key in `.env` only (not exposed in the UI):
+### 2. Configure Environment Variables
+Create a `.env` file in the root directory:
 ```env
-GROQ_API_KEY="gsk_..."
+GROQ_API_KEY="gsk_your_groq_api_key_here"
 ```
 
 ### 3. Launch TalentIQ
 ```powershell
 python app.py
 ```
-Open **`http://127.0.0.1:7860`** — if that port is busy the app automatically falls
-back to the next free one (7861, 7862, 7863, …) and prints which port it picked.
-
-### 4. Create your account
-On first run the app shows a **login screen** — sign in or create an account with
-email + password (or Google, once configured, see below). **Data is isolated per
-account**: each user's jobs, candidates, screenings and interviews live in their own
-private folder (`data/users/<user_id>/`), so no account ever sees another's data.
-The pre-upgrade local data in `recruiter.db`/`chroma_db/` is automatically claimed by
-the **first** account that signs in — nothing is lost. Your login is also **remembered**
-across page reloads and server restarts (a session token is stored in the browser and
-resolved from `users.db`), so you only sign in once — until the session expires
-(`SESSION_TTL_DAYS`, default 30 days) or you log out. Failed sign-ins are rate-limited
-per email and per IP to stop brute-force attempts.
-
-### Suggested demo flow
-1. **Jobs** → create a requisition (optionally start from a **sample JD** which only fills the form) — every role appears in the open-roles table with its **Req. ID**, candidate/shortlist/screening counts
-2. **Jobs** → tick **Select** boxes in the **Open roles** list → **Delete selected listings** to remove roles (and everything tied to them) — deletes happen only from the list, never from a dropdown
-3. **Talent pool** → pick the **job listing** first, then ingest PDFs / paste resume text — candidates are automatically linked to that job's pipeline only (no global pool)
-4. **Shortlist** → select the job → *Rank* builds its ranked list → set **Top N for interview** → deep-screen candidates with the rubric
-5. **Interview** → the dropdown is pre-filled from the job's **top N shortlist**; candidates without a PASS screening are auto-screened on start. Pick the **interview language** (English/German) — questions, follow-ups and evaluations are written in that language
-6. **History & export** → per-job activity log + **CSV report per job title** (rank, hybrid scores, screening verdict, interview outcome) via **Download CSV** (one job at a time — no per-candidate exports).
-
-SQLite: `recruiter.db` · Vectors: `chroma_db/` · LLM: `.env` / Ollama
+Open your browser at **`http://127.0.0.1:7861`** (or `http://127.0.0.1:7860`).
 
 ---
 
-## ☁️ Deploy to Hugging Face Spaces (free tier)
+## ☁️ Hugging Face Spaces Deployment (ZeroGPU Ready)
 
-The app is a plain **Gradio** app (`ui.py` builds `gr.Blocks`; `app.py` calls
-`demo.launch()`), so it runs natively on HF's **Gradio SDK** — no Dockerfile is
-needed (none ships with the repo).
+TalentIQ is optimized for deployment to Hugging Face Spaces using the **Gradio SDK** and **ZeroGPU** hardware.
 
-> ⚠️ **2026 free-tier reality:** free accounts can no longer create **CPU Basic**
-> Gradio Spaces (the selector greys it out) — the only free hardware for a new
-> Gradio Space is **ZeroGPU** (2 per free account). ZeroGPU targets GPU demos;
-> a CPU-only app like this consumes **0 GPU quota** (quota only ticks inside
-> `@spaces.GPU` functions) but waits in a GPU queue for no benefit. The **Docker**
-> SDK is now `Paid`.
+### 1. Setup Backup Dataset & Tokens
+1. Create a private Hugging Face Dataset: [huggingface.co/new-dataset](https://huggingface.co/new-dataset) (e.g., `talentiq-backup`, private).
+2. Generate an Access Token with **Write** permissions: [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
 
-1. **Create the backup dataset** (free + private, 100 GB):
-   https://huggingface.co/new-dataset → name `talentiq-backup` → **Private**.
-2. **Create a Write token:** https://huggingface.co/settings/tokens.
-3. **Create the Space** at https://huggingface.co/new-space → SDK: **Gradio** →
-   hardware: **ZeroGPU** → Create Space.
-4. **Push the repo** to the Space (or upload the files directly):
+### 2. Deploy to HF Spaces
+1. Create a new Space on Hugging Face: [huggingface.co/new-space](https://huggingface.co/new-space) $\rightarrow$ SDK: **Gradio** $\rightarrow$ Hardware: **ZeroGPU**.
+2. Push your repository to the Space:
    ```bash
-   git init && git add -A && git commit -m "TalentIQ"
-   git remote add space https://huggingface.co/spaces/<user>/<space>
+   git remote add space https://huggingface.co/spaces/<your-username>/<your-space-name>
    git push space main
    ```
-   The Gradio runtime installs `requirements.txt` and runs `app.py` — no code
-   changes: it binds `0.0.0.0:$PORT` automatically when `SPACE_ID` is set.
-5. **Add Secrets** (Space Settings → Variables and secrets):
-   `GROQ_API_KEY` (required), `HF_TOKEN` (the step-2 token), and
-   `HF_BACKUP_REPO=<your-username>/talentiq-backup` (enables the backup).
-6. The **Live meeting** tab streams the transcript from the browser microphone
-   — Spaces serves HTTPS, so mic access works out of the box (allow the
-   browser permission prompt).
+3. Configure **Variables and Secrets** in Space Settings:
+   - `GROQ_API_KEY`: *(Secret, Required)* Your Groq API key.
+   - `HF_TOKEN`: *(Secret, Optional)* Your HF Write token for automated backups.
+   - `HF_BACKUP_REPO`: *(Variable, Optional)* `your-username/talentiq-backup`.
 
-> 💾 **Data survives for free:** `backup.py` pushes `users.db` + `data/users/` to
-> your private dataset repo every 30 min and restores them on boot when the disk
-> is empty (a wiped Space) — so accounts and jobs come back intact. Local data is
-> never overwritten. Space storage is still ephemeral (sleeps after ~2 days idle;
-> first visit pays a cold boot), but a wipe is no longer data loss. Media
-> recordings are excluded by default (`HF_BACKUP_INCLUDE_MEDIA=1` to include).
+---
 
-> ⏰ **Never sleeps (free):** the repo ships `.github/workflows/keepalive.yml` —
-> a GitHub Actions cron that pings `https://<your-username>-<space-name>.hf.space`
-> every 30 minutes so the Space never idles out. Set one repo variable
-> (`HF_SPACE_URL`) and you're done; an UptimeRobot monitor (pings every 5 min,
-> free tier) is the no-code alternative. Both are documented in MANUAL §9.
+## 📋 Environment Variables Reference
 
-### Optional env vars (Space Settings → Variables)
-
-| Variable | Default | Effect |
+| Variable | Default | Description |
 | :--- | :--- | :--- |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Strong model for scoring (screening, evaluation). Pick a faster/cheaper one to cut latency/cost on the free tier. |
-| `GROQ_FAST_MODEL` | `llama-3.1-8b-instant` | Cheap model for low-stakes calls (follow-up detection) — scoring stays on `GROQ_MODEL`. |
-| `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Multilingual embeddings (English + German); switching rebuilds the index on boot. |
-| `RERANK_MODEL` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | Multilingual cross-encoder (English + German) for reranking. |
-| `RERANK_ENABLED` | `1` | `0` disables the cross-encoder (saves ~80 MB RAM + CPU time; pure vector retrieval only). |
-| `PORT` / `GRADIO_SERVER_NAME` | `7861` / auto | Override the bind address (set automatically on Spaces). If the port is busy the app falls back to the next free one. |
-| `GOOGLE_CLIENT_ID` | — | Enables the **Continue with Google** button — the standard redirect flow (browser → Google → back to the app). Create a **Web application** OAuth client and add your app's URL as an **Authorized redirect URI** (e.g. `http://localhost:7861/` locally, `https://<space>.hf.space/` deployed). |
-| `GOOGLE_CLIENT_SECRET` | — | Client secret of the same Web application client (required for the redirect flow). |
-| `USERS_DB_PATH` | `users.db` | Global identity store (accounts, PBKDF2 password hashes, Google ids). |
-| `USER_DATA_DIR` | `data/users/` | Per-account private storage: each user gets `recruiter.db`, `chroma/`, `exports/`, `media/` here. |
-| `MAX_PDF_UPLOAD_MB` | `15` | Largest accepted resume PDF (MB); larger files are rejected with a clear message. |
-| `HF_TOKEN` | — | HF **write** token — enables the free Space backup (`backup.py`). |
-| `HF_BACKUP_REPO` | — | Private dataset repo for backups, e.g. `user/talentiq-backup` (created automatically). |
-| `HF_BACKUP_INTERVAL_MIN` | `30` | Minutes between backup pushes. |
-| `HF_BACKUP_INCLUDE_MEDIA` | `0` | `1` also archives raw interview recordings (larger, slower pushes). |
-
-> 💡 Free-tier tips: keep the corpus small, prefer `RERANK_ENABLED=0` if the
-> Space feels slow, and use `GROQ_MODEL=llama-3.1-8b-instant` for interactive
-> demos. Persisted data lives in `recruiter.db` + `chroma_db/` inside the Space.
+| `GROQ_API_KEY` | — | **Required**. Groq API key for Llama 3.3 70B & Whisper API. |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Main LLM model used for screening and evaluation. |
+| `GROQ_FAST_MODEL` | `llama-3.1-8b-instant` | Lightweight model for follow-up detection calls. |
+| `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Multilingual SentenceTransformers model for dense vectors. |
+| `RERANK_MODEL` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | Multilingual CrossEncoder model for reranking. |
+| `RERANK_ENABLED` | `1` | Set `0` to disable reranking and save memory/CPU. |
+| `PORT` | `7860` (HF) / `7861` (Local) | HTTP server port. |
+| `GOOGLE_CLIENT_ID` | — | Google OAuth 2.0 Web Application Client ID. |
+| `GOOGLE_CLIENT_SECRET` | — | Google OAuth 2.0 Web Application Client Secret. |
+| `HF_TOKEN` | — | Hugging Face write token for data backup (`backup.py`). |
+| `HF_BACKUP_REPO` | — | Private HF Dataset repo ID (e.g. `user/talentiq-backup`). |
+| `HF_BACKUP_INTERVAL_MIN` | `30` | Backup push frequency in minutes. |
 
 ---
 
-## 🧪 Smoke Check
+## 📜 License
 
-Launch the workspace and walk the demo flow once to confirm the pipeline:
-
-```powershell
-python app.py
-```
-
-1. **Jobs** → create a job (sample JDs only fill the form)
-2. **Talent pool** → ingest a resume into that job's pipeline
-3. **Shortlist** → rank the job, deep-screen a candidate
-4. **Interview** → pick a language (English/German) and run one question/answer
-   cycle — or switch to **Live meeting** mode, generate a **Jitsi** link, and run
-   a live-transcript cycle with the microphone
-5. **History & export** → generate the per-job CSV report and open it in Excel
-
-For an automated end-to-end verification (boot the app, then drive it like a
-browser with the `gradio_client` — real Groq Whisper + LLM evaluation, needs
-`GROQ_API_KEY`):
-
-```powershell
-python app.py                                        # terminal 1
-.venv/Scripts/python.exe tests/e2e_runtime_verify.py # terminal 2
-```
-
-Set `E2E_APP=http://127.0.0.1:<port>` to point it at a non-default port.
-
----
-
-## 📊 Evaluating Retrieval Quality
-
-The question every ML interview asks — *"how do you know your retrieval works?"*
-— is answered with numbers by `eval_retrieval.py`. It runs the **production
-retrieval components** (section-aware chunking → embeddings → cosine search →
-cross-encoder rerank) over a small **labeled dataset** of 8 resumes ↔ 8
-job-description queries (one German resume) and reports standard
-information-retrieval metrics **with and without** the reranker:
-
-```powershell
-python eval_retrieval.py                 # comparison table, k=5
-python eval_retrieval.py --k 3           # top-3 metrics
-python eval_retrieval.py --no-rerank     # vector baseline only (no model download)
-python eval_retrieval.py --verbose       # per-query breakdown
-```
-
-| Metric | What it measures |
-| :--- | :--- |
-| `recall@k` | Fraction of the truly relevant resumes found in the top-k |
-| `MRR` | How early the first relevant resume appears (mean reciprocal rank) |
-| `NDCG@k` | Ranking quality vs. the ideal order (binary relevance) |
-
-Metrics are **document-level**: chunk hits are collapsed to the resume with its
-best chunk score, mirroring how the product ranks candidates. The rerank path
-mirrors production `search_resume` exactly (fetch `max(k·3, 8)` chunks by
-cosine, rerank down to `k`). No LLM API calls — purely local models (first run
-downloads ~120 MB embeddings and ~470 MB cross-encoder, cached afterwards).
-Set `RERANK_ENABLED=0` to also see the app's behavior with reranking off.
-
----
-
-## 🧠 Fine-Tuned Skill Classifier
-
-A *trained* ML component — not just an API call. `skill_model.py` fine-tunes a
-small BERT (`prajjwal1/bert-mini`, 11M params) on a **hand-labeled dataset of
-~450 resume skill phrases across 10 categories**, using a from-scratch PyTorch
-training loop (warmup schedule, gradient clipping, label smoothing, best-epoch
-selection by held-out macro-F1) — no `Trainer`/`accelerate`/`datasets` deps.
-
-```powershell
-python skill_model.py          # train + save to data/skill_model (CPU, ~5 min)
-python skill_model.py --check  # classify example phrases with the trained model
-```
-
-Measured on a 20% held-out split the model reaches **~40% macro-F1 (≈4× random
-chance)** — the honest ceiling for ~450 phrases on CPU, and confident
-predictions are what production uses.
-
-**Integration:** `ranking._keyword_overlap` falls back to skill-*category*
-matching when literal token overlap is zero, so a JD requirement like
-"Amazon Web Services" still credits a resume that says "AWS", and
-"PostgreSQL" credits "postgres". Purely additive and fail-open — without a
-trained model (`SKILL_CLASSIFIER_ENABLED=0`, or an empty `data/skill_model/`)
-the pipeline behaves exactly as before.
-
----
-
-## 📦 Phase Status
-
-| Phase | Goal | Status |
-| :--- | :--- | :--- |
-| **1** | RAG retrieve → JSON score → evidence UI | Done |
-| **2** | Mini-ATS: SQLite, hybrid rank, rubric, multi-turn interview | Done |
-| **3a** | Login (email/password + Google) with per-user data isolation | Done |
-| **3b** | Persistent sessions (survive reloads & restarts), Docker image, HF Spaces deployment | Done |
-| **3c** | Live meeting interviews: free Jitsi link + browser-mic live transcript → Q&A → RAG evaluation | Done |
-| **3d** | Per-account email settings (no `.env` SMTP), encrypted-at-rest password, "sends will fail" banner | Done |
+Distributed under the **MIT License**. See `LICENSE` for more information.
