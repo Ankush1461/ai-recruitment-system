@@ -10,6 +10,7 @@ from typing import Any
 try:
     import spaces  # type: ignore
 except Exception:
+
     class _DummySpaces:
         @staticmethod
         def GPU(func: Any = None, **kwargs: Any) -> Any:

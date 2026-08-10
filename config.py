@@ -110,6 +110,8 @@ SESSION_TTL_DAYS: int = int(os.getenv("SESSION_TTL_DAYS", "30"))
 # Uploaded PDFs are rejected above this size (MB). Gradio's file_types filter
 # only checks extensions — the size cap is enforced by the handler itself.
 MAX_PDF_UPLOAD_MB: int = int(os.getenv("MAX_PDF_UPLOAD_MB", "15"))
+# Uploaded email logos (company branding) are rejected above this size (MB).
+MAX_LOGO_MB: int = int(os.getenv("MAX_LOGO_MB", "2"))
 
 # ---- SQLite journal mode -----------------------------------------------------
 # WAL (default) lets the thread pool / two instances share the DB file. Set

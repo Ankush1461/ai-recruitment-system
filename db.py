@@ -166,6 +166,19 @@ def init_db(db_path: str | None = None) -> None:
                 user TEXT NOT NULL DEFAULT '',
                 password TEXT NOT NULL DEFAULT '',
                 starttls INTEGER NOT NULL DEFAULT 1,
+                company_name TEXT NOT NULL DEFAULT '',
+                company_logo TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS email_templates (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL DEFAULT 'shortlist',
+                name TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
 
@@ -193,6 +206,7 @@ def init_db(db_path: str | None = None) -> None:
         _migrate_job_candidates(conn)
         _migrate_job_req_id(conn)
         _migrate_candidate_job_id(conn)
+        _migrate_email_branding(conn)
 
 
 def _migrate_job_req_id(conn: sqlite3.Connection) -> None:
@@ -243,6 +257,25 @@ def _migrate_candidate_job_id(conn: sqlite3.Connection) -> None:
         ) WHERE job_id IS NULL OR job_id = ''
         """
     )
+
+
+def _migrate_email_branding(conn: sqlite3.Connection) -> None:
+    """Add the email-branding columns (company name + logo) to email_settings
+    for accounts whose table predates them (ALTER ADD COLUMN in place)."""
+    try:
+        cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(email_settings)").fetchall()
+        }
+    except sqlite3.OperationalError:
+        return  # table unavailable — skip the migration entirely (fail-open)
+    if "company_name" not in cols:
+        conn.execute(
+            "ALTER TABLE email_settings ADD COLUMN company_name TEXT NOT NULL DEFAULT ''"
+        )
+    if "company_logo" not in cols:
+        conn.execute(
+            "ALTER TABLE email_settings ADD COLUMN company_logo TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _next_req_id(conn: sqlite3.Connection) -> str:
@@ -556,19 +589,23 @@ def save_email_settings(
     user: str = "",
     password: str = "",
     starttls: bool = True,
+    company_name: str = "",
+    company_logo: str = "",
     db_path: str | None = None,
 ) -> dict:
-    """Upsert this account's SMTP settings (single row, id=1)."""
+    """Upsert this account's SMTP + branding settings (single row, id=1)."""
     now = _utc_now()
     with connect(db_path) as conn:
         conn.execute(
             "INSERT INTO email_settings "
-            "(id, host, port, mail_from, mail_from_name, user, password, starttls, updated_at) "
-            "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "(id, host, port, mail_from, mail_from_name, user, password, starttls, "
+            " company_name, company_logo, updated_at) "
+            "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET "
             "host = excluded.host, port = excluded.port, mail_from = excluded.mail_from, "
             "mail_from_name = excluded.mail_from_name, user = excluded.user, "
             "password = excluded.password, starttls = excluded.starttls, "
+            "company_name = excluded.company_name, company_logo = excluded.company_logo, "
             "updated_at = excluded.updated_at",
             (
                 (host or "").strip(),
@@ -578,6 +615,8 @@ def save_email_settings(
                 (user or "").strip(),
                 _encrypt_password(password or ""),
                 1 if starttls else 0,
+                (company_name or "").strip(),
+                (company_logo or "").strip(),
                 now,
             ),
         )
@@ -611,13 +650,212 @@ def get_email_settings(db_path: str | None = None) -> dict | None:
 
 
 def clear_email_settings(db_path: str | None = None) -> None:
-    """Drop the account's SMTP settings — sends revert to the .env config."""
+    """Drop the account's SMTP sender — sends stay disabled until a new one is
+    saved. The email branding (company name / logo) is deliberately KEPT: it is
+    a separate concern from the SMTP transport."""
     try:
         with connect(db_path) as conn:
-            conn.execute("DELETE FROM email_settings WHERE id = 1")
+            conn.execute(
+                "UPDATE email_settings SET host = '', port = 587, mail_from = '', "
+                "mail_from_name = '', user = '', password = '', starttls = 1, "
+                "updated_at = ? WHERE id = 1",
+                (_utc_now(),),
+            )
     except sqlite3.OperationalError:
         return
     audit("clear_email_settings", "email_settings", "account", db_path=db_path)
+
+
+# ---- Per-account email templates -------------------------------------------
+# Reusable message templates, one row per template, kept per account in the
+# private recruiter.db (same isolation as email_settings). `kind` is
+# 'shortlist' or 'invite'; each kind can hold any number of templates and at
+# most ONE preferred (is_default=1) template — the one pre-selected when
+# composing that email type.
+
+def list_email_templates(
+    kind: str | None = None,
+    db_path: str | None = None,
+) -> list[dict]:
+    """This account's templates, newest-updated first. Filter by kind
+    ('shortlist' | 'invite') when only one email type is wanted."""
+    with connect(db_path) as conn:
+        if kind:
+            rows = conn.execute(
+                "SELECT * FROM email_templates WHERE kind = ? "
+                "ORDER BY updated_at DESC",
+                (kind,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM email_templates ORDER BY updated_at DESC"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_email_template(
+    template_id: str,
+    db_path: str | None = None,
+) -> dict | None:
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM email_templates WHERE id = ?", (template_id,)
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def save_email_template(
+    *,
+    template_id: str | None = None,
+    kind: str = "shortlist",
+    name: str = "",
+    subject: str = "",
+    body: str = "",
+    is_default: bool = False,
+    db_path: str | None = None,
+) -> dict:
+    """Insert a new template (template_id=None) or update an existing one.
+
+    When `is_default` is set, any other preferred template of the same kind
+    is cleared first (one preferred per email type).
+    """
+    tid = template_id or _new_id("tpl_")
+    now = _utc_now()
+    kind = kind if kind in ("shortlist", "invite") else "shortlist"
+    with connect(db_path) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM email_templates WHERE id = ?", (tid,)
+        ).fetchone()
+        if exists:
+            fields = ["kind = ?", "name = ?", "subject = ?", "body = ?"]
+            values: list[Any] = [kind, name, subject, body]
+            if is_default:
+                fields.append("is_default = 1")
+            fields.append("updated_at = ?")
+            values.append(now)
+            values.append(tid)
+            conn.execute(
+                f"UPDATE email_templates SET {', '.join(fields)} WHERE id = ?",
+                values,
+            )
+        else:
+            conn.execute(
+                "INSERT INTO email_templates "
+                "(id, kind, name, subject, body, is_default, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (tid, kind, name, subject, body, 1 if is_default else 0, now, now),
+            )
+        if is_default:
+            conn.execute(
+                "UPDATE email_templates SET is_default = 0 "
+                "WHERE kind = ? AND id != ?",
+                (kind, tid),
+            )
+    audit("save_email_template", "email_template", tid, f"{kind}:{name}", db_path)
+    return get_email_template(tid, db_path)  # type: ignore[return-value]
+
+
+def set_default_email_template(
+    template_id: str,
+    db_path: str | None = None,
+) -> dict | None:
+    """Mark one template as the preferred one for its kind (clears the
+    previous preferred template of that kind)."""
+    t = get_email_template(template_id, db_path)
+    if not t:
+        return None
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE email_templates SET is_default = 0 WHERE kind = ?", (t["kind"],)
+        )
+        conn.execute(
+            "UPDATE email_templates SET is_default = 1 WHERE id = ?", (template_id,)
+        )
+    audit("set_default_email_template", "email_template", template_id, t["kind"], db_path)
+    return get_email_template(template_id, db_path)
+
+
+def get_default_email_template(
+    kind: str,
+    db_path: str | None = None,
+) -> dict | None:
+    """The preferred template for one email type (None when none is marked)."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM email_templates WHERE kind = ? AND is_default = 1 "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (kind,),
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def delete_email_template(template_id: str, db_path: str | None = None) -> None:
+    """Permanently remove a template (the kind then simply has no preferred
+    template until the user marks another one)."""
+    with connect(db_path) as conn:
+        conn.execute("DELETE FROM email_templates WHERE id = ?", (template_id,))
+    audit("delete_email_template", "email_template", template_id, db_path=db_path)
+
+
+# Built-in starter templates, mirroring the original hard-coded email designs.
+# Seeded per account the first time an email type has zero templates, so the
+# feature is never an empty shell and sends always have a sensible default.
+_DEFAULT_TEMPLATES: dict[str, dict[str, str]] = {
+    "shortlist": {
+        "name": "Standard shortlist",
+        "subject": "Shortlisted: {{job_title}} ({{req_id}})",
+        "body": (
+            "Hi {{name}},\n\n"
+            "Great news — your application for {{job_title}} ({{req_id}}) "
+            "has been shortlisted by our AI screening.\n\n"
+            "Your background is a strong match for the role's requirements, "
+            "and you are now in the candidate pipeline.\n\n"
+            "{{message}}\n\n"
+            "Next step: the recruiting team will reach out to schedule an interview.\n\n"
+            "Best regards,\nThe TalentIQ Recruiting Team"
+        ),
+    },
+    "invite": {
+        "name": "Standard interview invite",
+        "subject": "Interview invitation: {{job_title}} ({{req_id}})",
+        "body": (
+            "Hi {{name}},\n\n"
+            "Congratulations — you have been invited to a technical interview "
+            "for {{job_title}} ({{req_id}}).\n\n"
+            "The interview covers your background and the role's key requirements.\n\n"
+            "Join your interview using the link below:\n\n"
+            "{{invite_link}}\n\n"
+            "Please reply to confirm a convenient time.\n\n"
+            "Best regards,\nThe TalentIQ Recruiting Team"
+        ),
+    },
+}
+
+
+def ensure_default_email_templates(
+    kind: str | None = None,
+    db_path: str | None = None,
+) -> bool:
+    """Seed the built-in starter template for an email type when the account
+    has none yet (fresh account, or every template of that kind was deleted).
+    The seeded template is marked preferred. Returns True when anything was
+    created."""
+    kinds = [kind] if kind else list(_DEFAULT_TEMPLATES)
+    created = False
+    for k in kinds:
+        if list_email_templates(k, db_path):
+            continue
+        t = _DEFAULT_TEMPLATES[k]
+        save_email_template(
+            kind=k,
+            name=t["name"],
+            subject=t["subject"],
+            body=t["body"],
+            is_default=True,
+            db_path=db_path,
+        )
+        created = True
+    return created
 
 
 # ---- Job ↔ Candidate pipeline (per-job candidate lists) ------------------

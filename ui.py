@@ -19,8 +19,10 @@ except Exception:
 
 import functools
 import os
+import shutil
 import threading
 import warnings
+from contextlib import suppress
 
 import gradio as gr
 from dotenv import load_dotenv
@@ -335,10 +337,10 @@ def _jobs_table() -> list[list]:
 
 # Number of stored-data outputs returned by _auth_refresh_all() and wired as
 # demo._auth_outputs
-# ([*_ws_outputs, *_email_settings_refresh, em_history, vi_history,
-#   *_profile_refresh] = 17 + 9 + 2 + 4).
+# ([*_ws_outputs, *_email_settings_refresh, *_email_template_refresh,
+#   em_history, vi_history, *_profile_refresh] = 17 + 11 + 6 + 2 + 4).
 # Enforced by an assertion in build_demo() so the count can never drift.
-_AUTH_REFRESH_OUTPUTS: int = 32
+_AUTH_REFRESH_OUTPUTS: int = 40
 
 
 def _normalize_job_ids(job_ids) -> list[str]:
@@ -1085,9 +1087,200 @@ def _on_em_job_change(token, job_id):
     )
 
 
+# ---- Email templates (per email type) ----------------------------------
+
+def _tmpl_kind_from_radio(kind: str) -> str:
+    """Email-type radio value → template kind ('shortlist' | 'invite')."""
+    return "invite" if kind and "Interview" in str(kind) else "shortlist"
+
+
+def _template_choices(kind: str) -> list[tuple[str, str]]:
+    """Templates of one email type for the manager dropdown — the preferred
+    template first, labelled with a ★ marker."""
+    tpls = db.list_email_templates(kind)
+    tpls.sort(key=lambda t: (0 if t.get("is_default") else 1, (t.get("name") or "").lower()))
+    return [
+        (
+            (f"{t.get('name') or '(unnamed)'} ★ preferred" if t.get("is_default") else t.get("name") or "(unnamed)"),
+            t["id"],
+        )
+        for t in tpls
+    ]
+
+
+def _em_template_choices(kind: str) -> list[tuple[str, str]]:
+    """Compose-form dropdown: the built-in design + every saved template."""
+    choices: list[tuple[str, str]] = [("(Built-in template)", "")]
+    choices.extend(_template_choices(kind))
+    return choices
+
+
+def _tmpl_dropdown_update(choices: list[tuple[str, str]], value: str | None) -> dict:
+    """gr.update for a template dropdown — never assigns a value that is not
+    among the choices (Gradio crashes preprocessing with 'Value: X is not in
+    the list of choices')."""
+    if not value or value not in [c[1] for c in choices]:
+        value = None
+    return gr.update(choices=choices, value=value)
+
+
+def _email_template_refresh(kind: str = "shortlist") -> tuple:
+    """The 6 Email-template outputs (compose dropdown, manager dropdown,
+    name, subject, body, status) loaded for one email type."""
+    # Seed the built-in starter template the first time a kind has none, so
+    # the feature is never an empty shell and sends always have a default.
+    db.ensure_default_email_templates(kind)
+    choices = _template_choices(kind)
+    em_choices = _em_template_choices(kind)
+    pref = db.get_default_email_template(kind)
+    value = pref["id"] if pref else ""
+    if pref:
+        name, subject, body = (
+            pref.get("name") or "", pref.get("subject") or "", pref.get("body") or ""
+        )
+    else:
+        name = subject = body = ""
+    if pref:
+        status = (
+            f"⭐ **{pref.get('name') or '(unnamed)'}** is the preferred template — "
+            "it is pre-selected when composing this email type."
+        )
+    else:
+        status = (
+            "_No templates yet — create one below. Emails use the built-in "
+            "design until you save a template._"
+        )
+    return (
+        _tmpl_dropdown_update(em_choices, value),
+        _tmpl_dropdown_update(choices, value),
+        gr.update(value=name),
+        gr.update(value=subject),
+        gr.update(value=body),
+        gr.update(value=status),
+    )
+
+
 @_require_session
-def on_send_email(token, job_id, candidate_id, kind, to, message, invite_link=""):
-    """Build + send a shortlist or interview-invite email via SMTP."""
+def _on_email_kind_change(token, kind):
+    """Email type switched — point both template dropdowns at that type's
+    preferred template (or the built-in design when none is set)."""
+    k = _tmpl_kind_from_radio(kind)
+    # Seed the starter template for this kind too (it may not exist yet).
+    db.ensure_default_email_templates(k)
+    em_choices = _em_template_choices(k)
+    choices = _template_choices(k)
+    pref = db.get_default_email_template(k)
+    value = pref["id"] if pref else ""
+    return (
+        _tmpl_dropdown_update(em_choices, value),
+        _tmpl_dropdown_update(choices, value),
+    )
+
+
+@_require_session
+def _on_tmpl_select(token, template_id):
+    """Load a picked template into the editor (blank for the built-in entry)."""
+    if not template_id:
+        return "", "", ""
+    t = db.get_email_template(template_id)
+    if not t:
+        return "", "", ""
+    return t.get("name") or "", t.get("subject") or "", t.get("body") or ""
+
+
+@_require_session
+def _on_tmpl_new(token, kind):
+    """Start a blank template for the current email type."""
+    k = _tmpl_kind_from_radio(kind)
+    return (
+        _tmpl_dropdown_update(_em_template_choices(k), ""),
+        _tmpl_dropdown_update(_template_choices(k), ""),
+        "", "", "",
+        gr.update(value=f"New **{k}** template — fill in the fields and click **Save template**."),
+    )
+
+
+@_require_session
+def _on_tmpl_save(token, kind, template_id, name, subject, body):
+    """Create or update the template in the editor and select it."""
+    k = _tmpl_kind_from_radio(kind)
+    name = (name or "").strip()
+    if not name:
+        return (
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            "Give the template a **name** first.",
+        )
+    t = db.save_email_template(
+        template_id=template_id or None,
+        kind=k,
+        name=name,
+        subject=subject or "",
+        body=body or "",
+    )
+    return (
+        _tmpl_dropdown_update(_em_template_choices(k), t["id"]),
+        _tmpl_dropdown_update(_template_choices(k), t["id"]),
+        gr.update(value=t.get("name") or ""),
+        gr.update(),
+        gr.update(),
+        f"Saved **{t.get('name') or '(unnamed)'}** — select it in the compose form or mark it as preferred.",
+    )
+
+
+@_require_session
+def _on_tmpl_set_default(token, kind, template_id):
+    """Mark the selected template as the preferred one for its email type."""
+    if not template_id:
+        return (
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            "Select a template first, then **Set as preferred**.",
+        )
+    t = db.get_email_template(template_id)
+    if not t:
+        return (
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            "Template not found — pick one from the list.",
+        )
+    k = t.get("kind") or _tmpl_kind_from_radio(kind)
+    db.set_default_email_template(template_id)
+    return (
+        _tmpl_dropdown_update(_em_template_choices(k), template_id),
+        _tmpl_dropdown_update(_template_choices(k), template_id),
+        gr.update(), gr.update(), gr.update(),
+        f"⭐ **{t.get('name') or '(unnamed)'}** is now the preferred template for this email type.",
+    )
+
+
+@_require_session
+def _on_tmpl_delete(token, kind, template_id):
+    """Permanently delete the selected template and clear the editor."""
+    if not template_id:
+        return (
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            "Select a template first, then **Delete template**.",
+        )
+    t = db.get_email_template(template_id)
+    name = (t or {}).get("name") or "(unnamed)"
+    db.delete_email_template(template_id)
+    k = _tmpl_kind_from_radio(kind)
+    pref = db.get_default_email_template(k)
+    value = pref["id"] if pref else ""
+    return (
+        _tmpl_dropdown_update(_em_template_choices(k), value),
+        _tmpl_dropdown_update(_template_choices(k), value),
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value=""),
+        f"Deleted **{name}**.",
+    )
+
+
+@_require_session
+def on_send_email(token, job_id, candidate_id, kind, template_id, to, message, invite_link=""):
+    """Build + send a shortlist or interview-invite email via SMTP.
+
+    `template_id` is the saved template to use ('' → the preferred template
+    for that email type → built-in design when none exists)."""
     if not job_id or not candidate_id:
         return "Select a **job** and a **candidate** first.", gr.update()
     cand = db.get_candidate(candidate_id)
@@ -1104,16 +1297,32 @@ def on_send_email(token, job_id, candidate_id, kind, to, message, invite_link=""
             gr.update(),
         )
     if kind and "Interview" in str(kind):
+        template = (
+            db.get_email_template(template_id)
+            if template_id
+            else db.get_default_email_template("invite")
+        )
         subject, body = emailer.build_invite_email(
-            job, cand, extra_msg=message or "", invite_link=invite_link or ""
+            job, cand,
+            extra_msg=message or "",
+            invite_link=invite_link or "",
+            template=template,
         )
     else:
-        subject, body = emailer.build_shortlist_email(job, cand, extra_msg=message or "")
+        template = (
+            db.get_email_template(template_id)
+            if template_id
+            else db.get_default_email_template("shortlist")
+        )
+        subject, body = emailer.build_shortlist_email(
+            job, cand, extra_msg=message or "", template=template
+        )
     res = emailer.send_email(to, subject, body)
     if not res["ok"]:
         return f"**Send failed:** {res['error']}", gr.update()
+    tpl_note = f" using **{template['name']}**" if template else ""
     return (
-        f"Sent **{subject}** to {to} — recorded in the audit log.",
+        f"Sent **{subject}** to {to}{tpl_note} — recorded in the audit log.",
         gr.update(value=_email_history_table()),
     )
 
@@ -1164,8 +1373,8 @@ _SMTP_USERNAME_IS_EMAIL: frozenset[str] = frozenset({
 
 
 def _email_settings_values(s: dict | None = None) -> tuple:
-    """The 7 settings-form values in effect (the account's own config — there
-    is no .env fallback)."""
+    """The 9 settings-form values in effect (the account's own config — there
+    is no .env fallback): SMTP fields + email-header branding."""
     s = s or emailer.resolved_settings()
     return (
         s["host"],
@@ -1175,6 +1384,8 @@ def _email_settings_values(s: dict | None = None) -> tuple:
         s["user"],
         s["password"],
         bool(s["starttls"]),
+        s["company_name"],
+        s["company_logo"] if os.path.isfile(s["company_logo"]) else None,
     )
 
 
@@ -1340,11 +1551,60 @@ def _on_delete_account(token, confirm_text):
     )
 
 
+# Only raster formats are accepted for the email logo — SVG (and anything
+# else) is rejected so a data-URI logo can never carry inline scripts.
+_ALLOWED_LOGO_EXTS: frozenset[str] = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+})
+
+
+def _persist_company_logo(logo_path) -> str:
+    """Copy an uploaded logo into this account's private folder and return the
+    stored path. An empty/cleared field removes the previously stored logo.
+    Raises ValueError for an oversized or unsupported upload."""
+    user = auth.active_user() or {}
+    if not logo_path or not str(logo_path).strip():
+        # Cleared — remove the previously stored logo file (if any).
+        prev = (emailer.resolved_settings().get("company_logo") or "").strip()
+        if prev and os.path.isfile(prev):
+            with suppress(OSError):
+                os.remove(prev)
+        return ""
+    src = str(logo_path).strip()
+    if not os.path.isfile(src):
+        return ""
+    ext = os.path.splitext(src)[1].lower()
+    if ext not in _ALLOWED_LOGO_EXTS:
+        raise ValueError("unsupported logo format — use PNG, JPG, GIF or WebP")
+    max_bytes = config.MAX_LOGO_MB * 1024 * 1024
+    if os.path.getsize(src) > max_bytes:
+        raise ValueError(f"the logo is too large — max {config.MAX_LOGO_MB} MB")
+    storage = auth.user_storage(user.get("id", ""))
+    logos_dir = os.path.join(os.path.dirname(storage["db"]), "logos")
+    dest = os.path.join(logos_dir, f"logo{ext}")
+    # Re-saving without re-uploading feeds the stored path back in — copying
+    # a file onto itself would truncate it, so keep it untouched.
+    if os.path.abspath(src) == os.path.abspath(dest):
+        return dest
+    os.makedirs(logos_dir, exist_ok=True)
+    # A new upload replaces any previous logo file.
+    for name in os.listdir(logos_dir):
+        with suppress(OSError):
+            os.remove(os.path.join(logos_dir, name))
+    shutil.copyfile(src, dest)
+    return dest
+
+
 @_require_session
 def on_save_email_settings(
-    token, host, port, mail_from, mail_from_name, user, password, starttls
+    token, host, port, mail_from, mail_from_name, user, password, starttls,
+    company_name, logo_path,
 ):
-    """Persist this account's SMTP settings and confirm the active config."""
+    """Persist this account's SMTP + branding settings and confirm."""
+    try:
+        logo_dest = _persist_company_logo(logo_path)
+    except ValueError as e:
+        return _email_settings_refresh(f"**Logo not saved:** {e}")
     db.save_email_settings(
         host=host or "",
         port=port or 587,
@@ -1353,21 +1613,28 @@ def on_save_email_settings(
         user=user or "",
         password=password or "",
         starttls=bool(starttls),
+        company_name=company_name or "",
+        company_logo=logo_dest,
     )
     msg = (
         "Saved — this account now sends from "
         f"**{mail_from or '(no from-address)'}** via **{host or '(no host)'}**."
     )
+    if (company_name or "").strip():
+        msg += f"\n\nHeader brand: **{(company_name or '').strip()}**."
+    if logo_dest:
+        msg += " Company logo saved — it appears at the top of emails."
     return _email_settings_refresh(msg)
 
 
 @_require_session
 def on_clear_email_settings(token):
-    """Drop the account config — sends stay disabled until a new sender is saved."""
+    """Drop the account's SMTP sender — sends stay disabled until a new sender
+    is saved. The email branding (company name / logo) is kept."""
     db.clear_email_settings()
     msg = (
         "Cleared — your account now has no SMTP sender; sends stay disabled "
-        "until you save new settings."
+        "until you save new settings (company name / logo are kept)."
     )
     return _email_settings_refresh(msg)
 
@@ -3225,6 +3492,15 @@ def build_demo() -> gr.Blocks:
                     value="Shortlist notification",
                     label="Email type",
                 )
+                em_tmpl_dd = gr.Dropdown(
+                    label="Email template",
+                    choices=_em_template_choices("shortlist"),
+                    value="",
+                    info=(
+                        "Pre-selected to your preferred template for this email "
+                        "type — or the built-in design"
+                    ),
+                )
                 with gr.Row():
                     em_to = gr.Textbox(
                         label="Recipient email",
@@ -3254,6 +3530,65 @@ def build_demo() -> gr.Blocks:
                     wrap=True,
                     column_widths=[120, "auto", "auto"],
                     label="Recently sent emails",
+                )
+
+            # ---- Email templates (create / edit / preferred) ----
+            with gr.Column(elem_classes=["panel"]):
+                gr.Markdown(
+                    "#### 📝 Email templates\n"
+                    "Create reusable templates **per email type** (shortlist "
+                    "notification / interview invite), edit them any time, and "
+                    "mark one as your **preferred** template — it is pre-selected "
+                    "when composing that email type."
+                )
+                gr.Markdown(
+                    "Placeholders are filled per candidate: `{{name}}`, "
+                    "`{{job_title}}`, `{{req_id}}`, `{{message}}` and (for "
+                    "invites) `{{invite_link}}`. Blank lines become paragraph "
+                    "breaks; the built-in design is used until you save a "
+                    "template."
+                )
+                with gr.Row():
+                    tmpl_dd = gr.Dropdown(
+                        label="Template",
+                        choices=_template_choices("shortlist"),
+                        value=None,
+                        info="Pick a template to edit — or start a new one",
+                        scale=4,
+                    )
+                    tmpl_new_btn = gr.Button(
+                        "✨ New template", variant="secondary", scale=1
+                    )
+                tmpl_name = gr.Textbox(
+                    label="Template name",
+                    placeholder="e.g. Standard shortlist",
+                )
+                tmpl_subject = gr.Textbox(
+                    label="Subject line",
+                    placeholder="Shortlisted: {{job_title}}",
+                )
+                tmpl_body = gr.Textbox(
+                    label="Email body",
+                    lines=8,
+                    placeholder=(
+                        "Hi {{name}},\n\n"
+                        "Great news — your application for {{job_title}} "
+                        "({{req_id}}) has been shortlisted.\n\n{{message}}\n\n"
+                        "Best regards,\nThe TalentIQ Recruiting Team"
+                    ),
+                )
+                with gr.Row():
+                    tmpl_save_btn = gr.Button("💾 Save template", variant="primary")
+                    tmpl_default_btn = gr.Button(
+                        "⭐ Set as preferred", variant="secondary"
+                    )
+                    tmpl_delete_btn = gr.Button(
+                        "🗑 Delete template", variant="stop", scale=0
+                    )
+                tmpl_status = gr.Markdown(
+                    "_No templates yet — create one above. Emails use the built-in "
+                    "design until you save a template._",
+                    elem_classes=["status-note"],
                 )
 
             # Floating "Email settings" bubble — hidden until the ⚙️ button
@@ -3297,6 +3632,20 @@ def build_demo() -> gr.Blocks:
                     )
                 with gr.Row():
                     es_starttls = gr.Checkbox(label="Use STARTTLS", value=True)
+                gr.Markdown(
+                    "**Email branding** — shown at the top of every email this "
+                    "account sends."
+                )
+                es_company = gr.Textbox(
+                    label="Company name",
+                    placeholder="e.g. Acme Corp",
+                )
+                es_logo = gr.Image(
+                    label="Company logo (optional)",
+                    type="filepath",
+                    height=96,
+                    interactive=True,
+                )
                 with gr.Row():
                     es_save_btn = gr.Button("Save settings", variant="primary")
                     es_test_btn = gr.Button("Send test email", variant="secondary")
@@ -3616,18 +3965,66 @@ def build_demo() -> gr.Blocks:
         )
         em_send_btn.click(
             fn=on_send_email,
-            inputs=[session_token, em_job_dd, em_cand_dd, email_kind, em_to, em_msg, em_link],
+            inputs=[
+                session_token, em_job_dd, em_cand_dd, email_kind, em_tmpl_dd,
+                em_to, em_msg, em_link,
+            ],
             outputs=[em_status, em_history],
         )
 
+        # ---- Email template manager wiring ----
+        # Switching the email type points both template dropdowns (compose +
+        # manager) at that type's preferred template.
+        email_kind.change(
+            fn=_on_email_kind_change,
+            inputs=[session_token, email_kind],
+            outputs=[em_tmpl_dd, tmpl_dd],
+        )
+        # Picking a template loads it into the editor (the compose dropdown
+        # and the manager dropdown share the editor).
+        em_tmpl_dd.change(
+            fn=_on_tmpl_select,
+            inputs=[session_token, em_tmpl_dd],
+            outputs=[tmpl_name, tmpl_subject, tmpl_body],
+        )
+        tmpl_dd.change(
+            fn=_on_tmpl_select,
+            inputs=[session_token, tmpl_dd],
+            outputs=[tmpl_name, tmpl_subject, tmpl_body],
+        )
+        tmpl_new_btn.click(
+            fn=_on_tmpl_new,
+            inputs=[session_token, email_kind],
+            outputs=[em_tmpl_dd, tmpl_dd, tmpl_name, tmpl_subject, tmpl_body, tmpl_status],
+        )
+        tmpl_save_btn.click(
+            fn=_on_tmpl_save,
+            inputs=[
+                session_token, email_kind, tmpl_dd, tmpl_name, tmpl_subject,
+                tmpl_body,
+            ],
+            outputs=[em_tmpl_dd, tmpl_dd, tmpl_name, tmpl_subject, tmpl_body, tmpl_status],
+        )
+        tmpl_default_btn.click(
+            fn=_on_tmpl_set_default,
+            inputs=[session_token, email_kind, tmpl_dd],
+            outputs=[em_tmpl_dd, tmpl_dd, tmpl_name, tmpl_subject, tmpl_body, tmpl_status],
+        )
+        tmpl_delete_btn.click(
+            fn=_on_tmpl_delete,
+            inputs=[session_token, email_kind, tmpl_dd],
+            outputs=[em_tmpl_dd, tmpl_dd, tmpl_name, tmpl_subject, tmpl_body, tmpl_status],
+        )
+
         # ---- Email settings (per account) wiring ----
-        # Order MUST match _email_settings_refresh()'s return: 7 form values
-        # (host, port, from, from_name, user, password, starttls), then the
-        # status line, then the warning banner — the same order _auth_outputs
-        # uses, so Save/Clear/Test never scramble fields.
+        # Order MUST match _email_settings_refresh()'s return: 9 form values
+        # (host, port, from, from_name, user, password, starttls, company name,
+        # logo), then the status line, then the warning banner — the same
+        # order _auth_outputs uses, so Save/Clear/Test never scramble fields.
         _es_outputs = [
             es_host, es_port, es_from, es_from_name,
-            es_user, es_pass, es_starttls, es_status, em_banner,
+            es_user, es_pass, es_starttls, es_company, es_logo,
+            es_status, em_banner,
         ]
         # Selecting a known provider from the SMTP host dropdown auto-fills
         # its default port (587 for the common free providers) and mirrors the
@@ -3648,7 +4045,7 @@ def build_demo() -> gr.Blocks:
             fn=on_save_email_settings,
             inputs=[
                 session_token, es_host, es_port, es_from, es_from_name,
-                es_user, es_pass, es_starttls,
+                es_user, es_pass, es_starttls, es_company, es_logo,
             ],
             outputs=_es_outputs,
         )
@@ -3804,16 +4201,24 @@ def build_demo() -> gr.Blocks:
             es_user,
             es_pass,
             es_starttls,
+            es_company,
+            es_logo,
             es_status,
             em_banner,
+            em_tmpl_dd,
+            tmpl_dd,
+            tmpl_name,
+            tmpl_subject,
+            tmpl_body,
+            tmpl_status,
             em_history,
             vi_history,
             *demo._pf_outputs,  # type: ignore[attr-defined]
         ]
         assert len(demo._auth_outputs) == _AUTH_REFRESH_OUTPUTS, (  # type: ignore[attr-defined]
-            "_AUTH_REFRESH_OUTPUTS must equal len(_ws_outputs) + 9 "
-            "(email settings + banner) + 2 (email history + video history) "
-            "+ 4 (profile)"
+            "_AUTH_REFRESH_OUTPUTS must equal len(_ws_outputs) + 11 "
+            "(email settings + branding + banner) + 6 (email templates) + 2 "
+            "(email history + video history) + 4 (profile)"
         )
         # The Email settings button outputs must match the auth-refresh
         # segment for those same 9 components — otherwise Save/Clear/Test
@@ -3844,6 +4249,9 @@ def _auth_refresh_all():
     return (
         *refresh_workspace(),
         *_email_settings_refresh(),
+        # Email templates — the compose + manager dropdowns for the default
+        # email type (the radio resets to "Shortlist notification" on login).
+        *_email_template_refresh("shortlist"),
         gr.update(value=_email_history_table()),
         gr.update(value=_video_history_table(focus)),
         *_profile_refresh(),
