@@ -1,0 +1,4 @@
+# Binary files are stored via Git LFS / Xet (pointer files in git,
+# actual content in remote storage). Required by Hugging Face Hub,
+# which rejects raw binary blobs in git objects.
+docs/screenshots/*.png filter=lfs diff=lfs merge=lfs -text

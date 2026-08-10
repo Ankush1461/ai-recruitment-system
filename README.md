@@ -35,7 +35,7 @@ The **Smart AI Recruiter System (TalentIQ)** is a full-stack, production-grade r
 ### 🔐 1. Multi-User Identity & Account Isolation
 - **Authentication**: Email/password authentication (PBKDF2 with SHA-256 + salt) and **Google OAuth 2.0 PKCE** redirect flow.
 - **Session Management**: Persistent HTTP session tokens stored in browser cookies with 30-day automatic expiration (`users.db`).
-- **Data Isolation**: Each user account gets a dedicated private data directory (`data/users/<user_id>/`) containing its own `recruiter.db` (SQLite), `chroma_db/` (vector store), `exports/` (CSV reports), and `logos/` (branding assets). No account can ever access another user's candidate pool or jobs.
+- **Data Isolation**: Each user account gets a dedicated private data directory (`data/users/<user_id>/`) containing its own `recruiter.db` (SQLite), `chroma/` (vector store), `exports/` (CSV reports), `media/` (recordings), and `logos/` (branding assets). No account can ever access another user's candidate pool or jobs.
 
 ### 💼 2. Job Requisition & Talent Pool Management
 - **Job Requisitions**: Full job description management with unique requisition IDs (`REQ-xxxx`), required skills, experience levels, and custom evaluation criteria.
@@ -57,12 +57,12 @@ The **Smart AI Recruiter System (TalentIQ)** is a full-stack, production-grade r
 
 ### 🎤 5. AI-Powered Technical Interviewing (Chat & Live Meeting)
 - **Multi-Turn Chat Interview**: Conducts multi-turn technical interviews grounded in job requirements and candidate resume evidence, supporting both **English and German**.
-- **Live Jitsi Meeting & Mic Transcription**: Generates on-demand Jitsi meeting links and streams browser microphone audio to Groq Whisper (`whisper-large-v3-turbo`) for real-time live transcriptions.
+- **Live Jitsi Meeting & Mic Transcription**: Generates on-demand Jitsi meeting links and streams browser microphone audio to Groq Whisper (`whisper-large-v3`) for real-time live transcriptions.
 - **Automated Interview Evaluation**: Evaluates candidate responses post-interview to generate final hiring recommendations.
 
 ### ✉️ 6. Custom Email Automation & Branding
 - **Per-Account SMTP Settings**: Configure custom SMTP credentials (Gmail, Outlook, custom SMTP) per user account.
-- **Custom Templates & Preferred Defaults**: Create, edit, and store custom HTML email templates for Shortlist Notifications and Interview Invites with dynamic placeholders (`{{name}}`, `{{job_title}}`, `{{req_id}}`, `{{message}}`, `{{invite_link}}`).
+- **Custom Templates & Preferred Defaults**: Create, edit, and store custom email templates for Shortlist Notifications and Interview Invites with dynamic placeholders (`{{name}}`, `{{job_title}}`, `{{req_id}}`, `{{message}}`, `{{invite_link}}`) — rendered into branded HTML at send time.
 - **Company Branding**: Upload company logos and customize company header branding directly in emails.
 
 ### 📊 7. Reporting & Data Resilience
@@ -94,26 +94,26 @@ flowchart TD
 
 | Module | File | Primary Responsibility |
 | :--- | :--- | :--- |
-| **Entrypoint** | [`app.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/app.py) | Application entrypoint. Configures port binding (7860 HF / 7861 local), registers OAuth endpoints, executes early `spaces` imports, and launches Gradio server. |
-| **UI Layer** | [`ui.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/ui.py) | Complete Gradio 6 workspace UI: Jobs, Talent Pool, Shortlist, Email Automation, Templates, Interview Chat, Live Meeting, and Profile drawer. |
-| **Authentication** | [`auth.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/auth.py) | Account authentication (Email/Password + Google OAuth 2.0 PKCE), session token resolution, and user storage path isolation (`users.db`). |
-| **Database Persistence** | [`db.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/db.py) | SQLite database layer: schemas and queries for jobs, candidates, shortlists, screenings, chat interviews, live meetings, email templates, and audit logs. |
-| **Ranking Engine** | [`ranking.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/ranking.py) | Per-job hybrid search algorithm (0.7 vector + 0.3 keyword) + skill category fallback. |
-| **Rubric Evaluator** | [`rubric.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/rubric.py) | Defines the 4-dimension weighted evaluation rubric and must-have skill hard gate logic. |
-| **RAG Screening** | [`screening.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/screening.py) | RAG context retrieval, LLM rubric evaluation prompt construction, and screening verdict persistence. |
-| **Chat Interview** | [`interview.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/interview.py) | Multi-turn technical interview dialog manager, follow-up detection, and transcript evaluation in English or German. |
-| **Live Interview** | [`live_interview.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/live_interview.py) | On-demand Jitsi meeting room generation + real-time browser mic streaming to Groq Whisper API. |
-| **Email Automation** | [`emailer.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/emailer.py) | Per-account SMTP client, custom HTML email template renderer, company logo embedder, and delivery logger. |
-| **LLM Interface** | [`llm.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/llm.py) | Unified Groq API interface (`llama-3.3-70b-versatile`) with local Ollama fallback support. |
-| **Vector Database** | [`vectorstore.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/vectorstore.py) | ChromaDB wrapper for dense vector indexing, candidate deletion, and cosine distance search. |
-| **Embeddings** | [`embeddings.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/embeddings.py) | SentenceTransformers wrapper for `paraphrase-multilingual-MiniLM-L12-v2` with `@spaces.GPU` decorator. |
-| **Reranker** | [`rerank.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/rerank.py) | Cross-encoder reranking via `mmarco-mMiniLMv2-L12-H384-v1` with `@spaces.GPU` decorator. |
-| **Skill Classifier** | [`skill_model.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/skill_model.py) | Fine-tuned PyTorch BERT skill classification model (10 categories) for zero-keyword fallback matching. |
-| **Retrieval Benchmark** | [`eval_retrieval.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/eval_retrieval.py) | Information Retrieval evaluation suite calculating Recall@k, MRR, and NDCG@k metrics. |
-| **CSV Reports** | [`reports.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/reports.py) | Generates per-job CSV hiring summaries containing scores, screening verdicts, and interview outcomes. |
-| **PDF Processing** | [`pdf.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/pdf.py) | PDF text extraction using `pypdf`. |
-| **Text Chunking** | [`chunking.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/chunking.py) | Section-aware resume chunking and job description parser. |
-| **Data Backup** | [`backup.py`](file:///c:/Users/ANKUSH/OneDrive/Desktop/AI_Recruiter/backup.py) | Background task that tars user databases and uploads them to a private Hugging Face Dataset repo. |
+| **Entrypoint** | [`app.py`](app.py) | Application entrypoint. Configures port binding (7860 HF / 7861 local), registers OAuth endpoints, executes early `spaces` imports, and launches Gradio server. |
+| **UI Layer** | [`ui.py`](ui.py) | Complete Gradio 6 workspace UI: Jobs, Talent Pool, Shortlist, Email Automation, Templates, Interview Chat, Live Meeting, and Profile drawer. |
+| **Authentication** | [`auth.py`](auth.py) | Account authentication (Email/Password + Google OAuth 2.0 PKCE), session token resolution, and user storage path isolation (`users.db`). |
+| **Database Persistence** | [`db.py`](db.py) | SQLite database layer: schemas and queries for jobs, candidates, shortlists, screenings, chat interviews, live meetings, email templates, and audit logs. |
+| **Ranking Engine** | [`ranking.py`](ranking.py) | Per-job hybrid search algorithm (0.7 vector + 0.3 keyword) + skill category fallback. |
+| **Rubric Evaluator** | [`rubric.py`](rubric.py) | Defines the 4-dimension weighted evaluation rubric and must-have skill hard gate logic. |
+| **RAG Screening** | [`screening.py`](screening.py) | RAG context retrieval, LLM rubric evaluation prompt construction, and screening verdict persistence. |
+| **Chat Interview** | [`interview.py`](interview.py) | Multi-turn technical interview dialog manager, follow-up detection, and transcript evaluation in English or German. |
+| **Live Interview** | [`live_interview.py`](live_interview.py) | On-demand Jitsi meeting room generation + real-time browser mic streaming to Groq Whisper API. |
+| **Email Automation** | [`emailer.py`](emailer.py) | Per-account SMTP client, custom HTML email template renderer, company logo embedder, and delivery logger. |
+| **LLM Interface** | [`llm.py`](llm.py) | Unified Groq API interface (`llama-3.3-70b-versatile`) with local Ollama fallback support. |
+| **Vector Database** | [`vectorstore.py`](vectorstore.py) | ChromaDB wrapper for dense vector indexing, candidate deletion, and cosine distance search. |
+| **Embeddings** | [`embeddings.py`](embeddings.py) | SentenceTransformers wrapper for `paraphrase-multilingual-MiniLM-L12-v2` with `@spaces.GPU` decorator. |
+| **Reranker** | [`rerank.py`](rerank.py) | Cross-encoder reranking via `mmarco-mMiniLMv2-L12-H384-v1` with `@spaces.GPU` decorator. |
+| **Skill Classifier** | [`skill_model.py`](skill_model.py) | Fine-tuned PyTorch BERT skill classification model (10 categories) for zero-keyword fallback matching. |
+| **Retrieval Benchmark** | [`eval_retrieval.py`](eval_retrieval.py) | Information Retrieval evaluation suite calculating Recall@k, MRR, and NDCG@k metrics. |
+| **CSV Reports** | [`reports.py`](reports.py) | Generates per-job CSV hiring summaries containing scores, screening verdicts, and interview outcomes. |
+| **PDF Processing** | [`pdf.py`](pdf.py) | PDF text extraction using `pypdf`. |
+| **Text Chunking** | [`chunking.py`](chunking.py) | Section-aware resume chunking and job description parser. |
+| **Data Backup** | [`backup.py`](backup.py) | Background task that tars user databases and uploads them to a private Hugging Face Dataset repo. |
 | **Keepalive Automation** | `.github/workflows/keepalive.yml` | GitHub Actions workflow that pings the Space URL every 30 minutes to prevent container sleep. |
 
 ---
@@ -126,7 +126,7 @@ flowchart TD
 | **Relevant Experience** | **25%** | Evaluates years of experience, direct domain relevance, and role progression. |
 | **Projects & Impact** | **20%** | Evaluates practical deliverables, scale, architecture complexity, and key metrics. |
 | **Education & Extras** | **15%** | Evaluates academic background, certifications, domain training, and publications. |
-| **Final PASS Threshold** | **$\ge 55 / 100$** | **PASS Verdict** requires Total Weighted Score $\ge 55$ **AND** Must-Have Skills Gate passed. |
+| **Final PASS Threshold** | **$\ge 55 / 100$** | **PASS Verdict** requires Total Weighted Score $\ge 55$ **AND** Must-Have Skills Gate ($\ge 4/10$) passed. |
 
 ---
 
@@ -149,8 +149,8 @@ python eval_retrieval.py --verbose     # Detailed per-query breakdown
 Trains a custom BERT model on a hand-labeled dataset of skill phrases across 10 categories:
 
 ```powershell
-python skill_model.py        # Train model & save weights to data/skill_model/
-python skill_model.py --check# Test classification on sample skill phrases
+python skill_model.py          # Train model & save weights to data/skill_model/
+python skill_model.py --check  # Test classification on sample skill phrases
 ```
 
 When literal keyword overlap between a job requirement and a resume is zero, the hybrid ranker queries this model to match skill categories (e.g., mapping "PostgreSQL" $\rightarrow$ "Databases" $\leftarrow$ "Postgres").
@@ -211,17 +211,43 @@ TalentIQ is optimized for deployment to Hugging Face Spaces using the **Gradio S
 | `GROQ_API_KEY` | — | **Required**. Groq API key for Llama 3.3 70B & Whisper API. |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Main LLM model used for screening and evaluation. |
 | `GROQ_FAST_MODEL` | `llama-3.1-8b-instant` | Lightweight model for follow-up detection calls. |
+| `OLLAMA_MODEL` | `llama3.1:8b` | Local Ollama fallback model (used when Groq is unavailable). |
+| `LLM_MAX_ATTEMPTS` / `LLM_BASE_DELAY` | `4` / `1.0` | Retry attempts + base backoff seconds for LLM calls. |
 | `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Multilingual SentenceTransformers model for dense vectors. |
 | `RERANK_MODEL` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | Multilingual CrossEncoder model for reranking. |
 | `RERANK_ENABLED` | `1` | Set `0` to disable reranking and save memory/CPU. |
-| `PORT` | `7860` (HF) / `7861` (Local) | HTTP server port. |
+| `SKILL_MODEL_DIR` | `data/skill_model` | Directory of the fine-tuned skill classifier artifacts. |
+| `SKILL_CLASSIFIER_ENABLED` | `1` | Set `0` to disable the fine-tuned skill classifier. |
+| `PORT` | `7860` (HF) / `7861` (Local) | HTTP server port (auto-increments if busy). |
+| `GRADIO_SERVER_NAME` | `0.0.0.0` (HF) / `127.0.0.1` | Gradio bind address. |
+| `GRADIO_SHARE` | `0` | `1` creates a temporary public share link. |
+| `RECRUITER_DB_PATH` | `recruiter.db` | Global/fallback SQLite path. |
+| `USERS_DB_PATH` | `users.db` | Identity store (accounts + sessions). |
+| `USER_DATA_DIR` | `data/users` | Per-account data root (each user gets its own `recruiter.db`, `chroma/`, `exports/`, `media/`, `logos/`). |
+| `CHROMA_DIR` | `chroma_db` | Vector store directory (global/legacy). |
+| `EXPORT_DIR` | `exports` | CSV export directory. |
+| `MEDIA_DIR` | `media` | Live-interview recordings directory. |
 | `GOOGLE_CLIENT_ID` | — | Google OAuth 2.0 Web Application Client ID. |
 | `GOOGLE_CLIENT_SECRET` | — | Google OAuth 2.0 Web Application Client Secret. |
+| `GOOGLE_CLOCK_SKEW_SECONDS` | `60` | Google id_token `iat`/`exp` tolerance. |
+| `SESSION_TTL_DAYS` | `30` | Persistent login-session lifetime. |
+| `AUTH_MAX_FAILED_ATTEMPTS` | `5` | Failed logins per email before a temporary lockout. |
+| `AUTH_IP_MAX_FAILED_ATTEMPTS` | `20` | Failed logins per IP before a temporary lockout. |
+| `AUTH_LOCKOUT_WINDOW` | `900` | Lockout window in seconds. |
+| `AUTH_MAX_REGISTRATIONS_PER_IP` / `AUTH_REGISTER_WINDOW` | `5` / `3600` | Registration rate cap per IP. |
+| `AUTH_ENFORCE_IP_LIMITS` | `1` (`0` on HF Spaces) | Per-IP caps (off on Spaces — shared proxy IP). |
+| `MAX_PDF_UPLOAD_MB` | `15` | Reject uploaded PDFs above this size. |
+| `MAX_LOGO_MB` | `2` | Reject company logos above this size. |
+| `SQLITE_WAL` | `1` | WAL journal mode (`0` for cloud-synced drives like OneDrive). |
 | `HF_TOKEN` | — | Hugging Face write token for data backup (`backup.py`). |
 | `HF_BACKUP_REPO` | — | Private HF Dataset repo ID (e.g. `user/talentiq-backup`). |
 | `HF_BACKUP_INTERVAL_MIN` | `30` | Backup push frequency in minutes. |
+| `HF_BACKUP_FIRST_DELAY_MIN` | `2` | Delay before the first backup push. |
+| `HF_BACKUP_INCLUDE_MEDIA` | `0` | `1` archives live-interview recordings too. |
+| `HF_BACKUP_ENABLED` | `1` | `0` disables the backup timer. |
 
----
+> ℹ️ **SMTP is configured per account** in **Email → ⚙️ Email settings** — not via `.env`.
+> See **[`MANUAL.md` §9](MANUAL.md#9-configuration--deployment)** for the complete configuration guide.
 
 ## 📜 License
 
