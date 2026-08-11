@@ -62,11 +62,21 @@ RERANK_MODEL: str = os.getenv("RERANK_MODEL", "cross-encoder/mmarco-mMiniLMv2-L1
 # chunk text is still returned to callers.
 RERANK_MAX_CHARS: int = int(os.getenv("RERANK_MAX_CHARS", "512"))
 # Optional ZeroGPU acceleration for the local models (embeddings, reranker,
-# skill classifier). Default OFF: everything runs on plain CPU — no ZeroGPU
-# quota consumed, works on free CPU Spaces. Set ZEROGPU_ENABLED=1 (e.g. a
-# Space secret) to route those calls through spaces.GPU on a GPU (ZeroGPU)
-# Space instead, e.g. after upgrading to PRO for GPU inference speed.
-ZEROGPU_ENABLED: bool = os.getenv("ZEROGPU_ENABLED", "0").lower() not in ("0", "false", "no", "off")
+# skill classifier). AUTO by default: enables itself when running inside the
+# ZeroGPU runtime (HF Spaces set SPACES_ZERO_GPU=true) so the model calls use
+# the real accelerator, with automatic CPU fallback whenever a GPU call fails
+# (daily quota exhausted, queue rejection, ...) — see zerogpu.py. On plain
+# CPU Spaces / local dev it stays off: everything runs on plain CPU and no
+# ZeroGPU quota is ever consumed. An explicit ZEROGPU_ENABLED=0/1 (e.g. a
+# Space secret) overrides the auto-detection.
+def _detect_zerogpu() -> bool:
+    explicit = os.getenv("ZEROGPU_ENABLED")
+    if explicit is not None and explicit.strip():
+        return explicit.strip().lower() not in ("0", "false", "no", "off")
+    return os.getenv("SPACES_ZERO_GPU", "").lower() in ("1", "t", "true")
+
+
+ZEROGPU_ENABLED: bool = _detect_zerogpu()
 
 # ---- Fine-tuned skill classifier ---------------------------------------------
 # Optional tiny BERT fine-tuned on labeled resume skill phrases (skill_model.py;

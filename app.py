@@ -17,17 +17,17 @@ except Exception:
 # ZeroGPU Spaces (HF hardware "ZeroGPU") abort at startup unless at least one
 # @spaces.GPU-decorated function exists in the loaded modules — "No @spaces.GPU
 # function detected during startup". The heavy local models (embeddings,
-# reranker, skill classifier) are only routed through spaces.GPU when
-# ZEROGPU_ENABLED=1 (default off → plain CPU), so this no-op bridge keeps a
-# ZeroGPU Space bootable in CPU mode. It is never called in normal operation
-# and consumes no GPU quota.
+# reranker, skill classifier) are auto-routed through spaces.GPU by zerogpu.py
+# when the runtime is detected, so this no-op bridge is belt-and-suspenders:
+# it guarantees the startup check passes even if auto-detection somehow fails.
+# It is never called in normal operation and consumes no GPU quota.
 @spaces.GPU
 def _zerogpu_entry() -> None:
     """No-op ZeroGPU entrypoint — satisfies the startup GPU-function check.
 
-    The app's models run on plain CPU unless ZEROGPU_ENABLED=1 explicitly
-    routes the real calls through @spaces.GPU; this stub only exists so a
-    Space on ZeroGPU hardware can boot in CPU mode without burning GPU quota.
+    The real model calls are routed through @spaces.GPU automatically when
+    the ZeroGPU runtime is detected (zerogpu.py), with CPU fallback on quota
+    exhaustion; this stub only guarantees the Space can boot.
     """
 
 import json

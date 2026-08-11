@@ -27,21 +27,18 @@ without a trained model every call returns immediately and the pipeline
 behaves exactly as before.
 """
 
+# ruff: noqa: I001 — import order is intentional: config + zerogpu (→
+# `import spaces`) must load BEFORE the PyTorch/transformers imports so HF's
+# spaces-before-CUDA rule holds on ZeroGPU Spaces; isort would reorder them.
 from __future__ import annotations
 
-import config  # needed before the optional ZeroGPU import below
+import config  # needed before the ZeroGPU helpers below
 
-# Optional ZeroGPU acceleration (Hugging Face GPU Spaces only). Enabled via
-# ZEROGPU_ENABLED=1; default OFF runs the classifier on plain CPU — no
-# ZeroGPU quota consumed, works on CPU Spaces. The import stays above the
-# PyTorch imports so HF's spaces-before-CUDA import rule holds.
-if config.ZEROGPU_ENABLED:
-    try:
-        import spaces as _spaces  # type: ignore
-    except Exception:
-        _spaces = None
-else:
-    _spaces = None
+# ZeroGPU helpers import the `spaces` package BEFORE the PyTorch imports so
+# HF's spaces-before-CUDA import rule holds. wrap_gpu() auto-routes the
+# classifier through @spaces.GPU on ZeroGPU Spaces with CPU fallback (see
+# zerogpu.py).
+from zerogpu import wrap_gpu
 
 import argparse
 import contextlib
@@ -593,9 +590,12 @@ def _predict_batch(texts: list[str]) -> list[tuple[str, float]]:
     return out
 
 
-# Route through ZeroGPU only when explicitly enabled (default: plain CPU).
-if _spaces is not None:
-    _predict_batch = _spaces.GPU(_predict_batch)
+# Route through ZeroGPU when the runtime is present (auto-detected), with
+# automatic CPU fallback on any GPU failure (quota exhausted, ...). The
+# tiny BERT model itself stays on CPU (from_pretrained default) even inside
+# the GPU worker — the heavy models (embeddings, reranker) carry the
+# acceleration, and this one is negligible.
+_predict_batch = wrap_gpu(_predict_batch)
 
 
 def classify_tokens(tokens: list[str]) -> dict[str, tuple[str, float]]:

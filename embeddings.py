@@ -1,6 +1,9 @@
 # ================================================================
 # 🧬 Local Embeddings — sentence-transformers (zero API cost)
 # ================================================================
+# ruff: noqa: I001 — import order is intentional: zerogpu (→ `import spaces`)
+# must load BEFORE sentence-transformers (torch) so HF's spaces-before-CUDA
+# rule holds on ZeroGPU Spaces; isort would reorder it.
 from __future__ import annotations
 
 import threading
@@ -9,17 +12,10 @@ from functools import lru_cache
 
 import config
 
-# Optional ZeroGPU acceleration (Hugging Face GPU Spaces only). Enabled via
-# ZEROGPU_ENABLED=1; default OFF runs the model on plain CPU — no ZeroGPU
-# quota consumed, works on CPU Spaces. The import stays above
-# sentence-transformers so HF's spaces-before-CUDA import rule holds.
-if config.ZEROGPU_ENABLED:
-    try:
-        import spaces as _spaces  # type: ignore
-    except Exception:
-        _spaces = None
-else:
-    _spaces = None
+# ZeroGPU helpers import the `spaces` package BEFORE sentence-transformers so
+# HF's spaces-before-CUDA import rule holds. wrap_gpu() auto-routes the model
+# calls through @spaces.GPU on ZeroGPU Spaces with CPU fallback (see zerogpu.py).
+from zerogpu import pick_device, wrap_gpu
 
 from sentence_transformers import SentenceTransformer
 
@@ -28,6 +24,13 @@ from sentence_transformers import SentenceTransformer
 # Override with EMBEDDING_MODEL. Switching models invalidates existing vectors —
 # vectorstore.maybe_reindex_all() rebuilds them automatically on the next boot.
 _MODEL_NAME = config.EMBEDDING_MODEL
+# Device is picked by PROBING for a real GPU (zerogpu.pick_device): on ZeroGPU
+# Spaces, torch.cuda.is_available() returns True even OUTSIDE @spaces.GPU (CUDA
+# emulation), so an implicit device="cuda" triggers a real CUDA init that ZeroGPU
+# rejects ("Low-level CUDA init (`torch._C._cuda_init`) reached..."). CPU on
+# plain CPU Spaces / local dev / the ZeroGPU main process; CUDA only inside the
+# ZeroGPU worker processes (real GPU), where the worker's fork-inherited CPU
+# model is re-deviced below.
 _model: SentenceTransformer | None = None
 _model_lock = threading.Lock()
 
@@ -43,12 +46,23 @@ def model_name() -> str:
 
 
 def get_model() -> SentenceTransformer:
-    """Lazy singleton — loads model once (thread-safe), reuses across calls."""
+    """Lazy singleton — loads model once (thread-safe), reuses across calls.
+
+    On ZeroGPU, the GPU worker is a fork of the main process, so it can
+    inherit the boot-warmed CPU-loaded model. sentence-transformers pins its
+    internal target device at construction, so a fork-inherited CPU model is
+    discarded and reloaded on the real GPU inside the worker (weights are
+    cached on disk, so the reload is fast).
+    """
     global _model
-    if _model is None:
-        with _model_lock:
-            if _model is None:
-                _model = SentenceTransformer(_MODEL_NAME)
+    device = pick_device()
+    with _model_lock:
+        if _model is not None:
+            first = next(_model.parameters(), None)
+            if first is not None and first.device.type != device:
+                _model = None  # fork-inherited model on the wrong device
+        if _model is None:
+            _model = SentenceTransformer(_MODEL_NAME, device=device)
     return _model
 
 
@@ -70,9 +84,9 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return embeddings.tolist()
 
 
-# Route through ZeroGPU only when explicitly enabled (default: plain CPU).
-if _spaces is not None:
-    embed_texts = _spaces.GPU(embed_texts)
+# Route through ZeroGPU when the runtime is present (auto-detected), with
+# automatic CPU fallback on any GPU failure (quota exhausted, ...).
+embed_texts = wrap_gpu(embed_texts)
 
 
 @lru_cache(maxsize=512)

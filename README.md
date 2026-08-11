@@ -202,7 +202,7 @@ TalentIQ is optimized for deployment to Hugging Face Spaces using the **Gradio S
    - `HF_TOKEN`: *(Secret, Optional)* Your HF Write token for automated backups.
    - `HF_BACKUP_REPO`: *(Variable, Optional)* `your-username/talentiq-backup`.
 
-> 💡 **ZeroGPU Spaces run in CPU mode by default.** Even on ZeroGPU hardware the app's local models (embeddings, reranker, skill classifier) run on plain CPU — a no-op `@spaces.GPU` bridge in `app.py` satisfies the ZeroGPU startup check without consuming any GPU quota. Set `ZEROGPU_ENABLED=1` as a Space secret **only** if you want those calls GPU-accelerated; free-tier ZeroGPU quota is limited (~5 min/day) and shared-pool queues can slow batch work.
+> 💡 **ZeroGPU is auto-detected — no manual flag needed.** The app enables itself when it detects the ZeroGPU runtime (`SPACES_ZERO_GPU=true`): embedding, reranking and skill classification are routed through `@spaces.GPU` so they use the real accelerator, and any GPU failure (daily quota exhausted, queue rejection, ...) automatically falls back to plain CPU for the rest of the process — the app never breaks or queues endlessly. On plain CPU Spaces and local dev it stays on CPU and consumes no GPU quota. Set `ZEROGPU_ENABLED=0`/`1` as a Space secret to override the auto-detection. Free-tier ZeroGPU quota is limited (~5 min/day), so the CPU fallback is what keeps batch screening working after the quota is spent.
 
 ---
 
