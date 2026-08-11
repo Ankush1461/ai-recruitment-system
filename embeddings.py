@@ -5,23 +5,23 @@ from __future__ import annotations
 
 import threading
 from contextlib import suppress
-from typing import Any
-
-try:
-    import spaces  # type: ignore
-except Exception:
-    class _DummySpaces:
-        @staticmethod
-        def GPU(func: Any = None, **kwargs: Any) -> Any:
-            if func is None:
-                return lambda f: f
-            return func
-
-    spaces = _DummySpaces()  # type: ignore
-
-from sentence_transformers import SentenceTransformer
+from functools import lru_cache
 
 import config
+
+# Optional ZeroGPU acceleration (Hugging Face GPU Spaces only). Enabled via
+# ZEROGPU_ENABLED=1; default OFF runs the model on plain CPU — no ZeroGPU
+# quota consumed, works on CPU Spaces. The import stays above
+# sentence-transformers so HF's spaces-before-CUDA import rule holds.
+if config.ZEROGPU_ENABLED:
+    try:
+        import spaces as _spaces  # type: ignore
+    except Exception:
+        _spaces = None
+else:
+    _spaces = None
+
+from sentence_transformers import SentenceTransformer
 
 # Multilingual paraphrase MiniLM-L12 — 384-dim, 50+ languages (EN + DE), still
 # CPU-friendly (~120 MB, downloads on first run, cached in ~/.cache/huggingface/).
@@ -62,7 +62,6 @@ def warm() -> None:
         get_model()
 
 
-@spaces.GPU
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """Embed a batch of text strings. Returns list of 384-dim float vectors."""
     model = get_model()
@@ -71,6 +70,26 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return embeddings.tolist()
 
 
+# Route through ZeroGPU only when explicitly enabled (default: plain CPU).
+if _spaces is not None:
+    embed_texts = _spaces.GPU(embed_texts)
+
+
+@lru_cache(maxsize=512)
+def _embed_single_vec(text: str) -> tuple[float, ...]:
+    """Embedded vector as an immutable tuple (cache value)."""
+    return tuple(embed_texts([text])[0])
+
+
 def embed_single(text: str) -> list[float]:
-    """Embed a single text string. Returns one 384-dim float vector."""
-    return embed_texts([text])[0]
+    """Embed a single text string. Returns one fresh 384-dim float vector.
+
+    LRU-cached internally: the same query text is embedded once, then reused
+    — e.g. the same JD requirements re-embedded for every candidate in a
+    deep-screen batch, or across repeated rank runs. Embedding is
+    deterministic, so the cached vector is identical to a fresh computation.
+    The cache stores an immutable tuple; each call returns a fresh list, so
+    callers can never mutate a shared cached vector. Bounded at 512 entries
+    (~1 MB) so a large variety of query texts can't grow memory.
+    """
+    return list(_embed_single_vec(text))

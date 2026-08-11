@@ -23,6 +23,9 @@ import time
 import auth
 import backup
 import db
+import embeddings as emb
+import rerank as rr
+import skill_model as sm
 import vectorstore
 from ui import demo
 
@@ -264,15 +267,19 @@ if __name__ == "__main__":
     # the login gate can serve accounts on first boot.
     auth.init_db()
     db.init_db()
+    # Preload the local models (embeddings, reranker, skill classifier) on
+    # daemon threads overlapping DB init + Gradio launch, so the first ingest /
+    # rank / deep-screen never pays model loading inline — on CPU Spaces the
+    # cross-encoder alone can take tens of seconds to load.
+    for warm_fn in (emb.warm, rr.warm, sm.warm):
+        threading.Thread(target=warm_fn, daemon=True).start()
     # Rebuild the vector index once if the embedding model changed (EN+DE
-    # support) — the resume_text in SQLite is the source of truth.
+    # support) — the resume_text in SQLite is the source of truth. The warm
+    # thread above usually finishes the embed-model load by the time a reindex
+    # needs it (both take the same model lock).
     reindexed = vectorstore.maybe_reindex_all()
     if reindexed:
         print(f"[boot] re-indexed {reindexed} candidate(s) with the new embedding model")
-    # Preload the embedding model on a daemon thread (overlaps Gradio launch)
-    # so candidate ingest is never blocked by model loading — ingest itself is
-    # deferred to a background thread, so this only shrinks the window in
-    # which a freshly ingested candidate has no vectors yet.
     is_hf_space = bool(os.getenv("SPACE_ID") or os.getenv("SYSTEM") == "spaces")
     default_port = "7860" if is_hf_space else "7861"
     requested_port = int(os.getenv("PORT", default_port))

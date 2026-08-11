@@ -149,16 +149,29 @@ def search_resume(
     candidate_id: str,
     top_k: int = 5,
     use_rerank: bool = True,
+    query_vec: list[float] | None = None,
 ) -> list[dict]:
     """Vector search resume chunks for a specific candidate.
 
     Retrieves a wider candidate set from Chroma, then optionally
     reranks with a cross-encoder before returning top_k.
 
+    Args:
+        query: The query text (used for reranking and, when ``query_vec`` is
+            omitted, for embedding).
+        candidate_id: Unique candidate identifier.
+        top_k: Number of results to return.
+        use_rerank: Rerank the wider fetch with a cross-encoder.
+        query_vec: Precomputed query embedding. Pass it when searching the
+            SAME query against many candidates (e.g. ranking) to skip
+            re-embedding the query per candidate — the hidden CPU cost on
+            slow (CPU Space) hardware.
+
     Returns list of dicts: {"text", "section", "score"}
     """
     collection = _get_resume_collection()
-    query_vec = emb.embed_single(query)
+    if query_vec is None:
+        query_vec = emb.embed_single(query)
 
     fetch_k = max(top_k * _RETRIEVE_MULTIPLIER, _RETRIEVE_MIN) if use_rerank else top_k
 

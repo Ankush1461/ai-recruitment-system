@@ -36,3 +36,7 @@ _interview_e2e.wav
 
 # ── Downloaded helpers (cloudflared.exe from start-tunnel.bat) ──
 tools/
+
+# ── Archived dev artifacts (video production, transcription tests, probes) ──
+# Kept locally for reference; never shipped with the app.
+archive/

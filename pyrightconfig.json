@@ -3,5 +3,6 @@
   "venv": ".venv",
   "extraPaths": [
     ".venv/Lib/site-packages"
-  ]
+  ],
+  "exclude": ["archive"]
 }

@@ -7,7 +7,7 @@ name: Keep Space awake
 # free minutes/month.
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/300 * * * *"
   workflow_dispatch: {} # manual run from the Actions tab
 
 jobs:

@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 
 import chunking
 import db
+import embeddings as emb
 import skill_model
 import vectorstore
 from screening import stable_candidate_id
@@ -290,6 +291,14 @@ def rank_candidates_for_job(job_id: str, top_n: int | None = None) -> list[RankR
     # A candidate ingested seconds ago may still be embedding on a background
     # thread — wait briefly so it is scored with real vectors, not keyword-only.
     _wait_for_pending_index({c["id"] for c in candidates})
+
+    # Embed each JD requirement ONCE and reuse the vector for every candidate.
+    # Re-embedding per candidate (N candidates x M requirements) was the
+    # hidden CPU cost on slow hardware (CPU Spaces) — these searches don't
+    # rerank, so the query embedding is the only expensive step per call.
+    # Skipped when the job has no candidates (nothing to score).
+    req_vectors = [emb.embed_single(req["text"]) for req in requirements] if candidates else []
+    global_vec = emb.embed_single(job["description"][:500]) if candidates else None
     # Fine-tuned skill classifier (optional, fail-open): one batched pass per
     # candidate to detect its skill-category labels, then cheap token-level
     # lookups per requirement — never blocks ranking when no model is present.
@@ -323,9 +332,9 @@ def rank_candidates_for_job(job_id: str, top_n: int | None = None) -> list[RankR
 
         per_req_scores: list[float] = []
         evidence: list[dict] = []
-        for req in requirements:
+        for req, query_vec in zip(requirements, req_vectors, strict=False):
             hits = vectorstore.search_resume(
-                req["text"], cid, top_k=2, use_rerank=False
+                req["text"], cid, top_k=2, use_rerank=False, query_vec=query_vec
             )
             if hits:
                 best = max(
@@ -346,7 +355,8 @@ def rank_candidates_for_job(job_id: str, top_n: int | None = None) -> list[RankR
         )
 
         global_hits = vectorstore.search_resume(
-            job["description"][:500], cid, top_k=3, use_rerank=False
+            job["description"][:500], cid, top_k=3, use_rerank=False,
+            query_vec=global_vec,
         )
         if global_hits:
             g = sum(max(0.0, min(1.0, h["score"])) for h in global_hits) / len(global_hits)

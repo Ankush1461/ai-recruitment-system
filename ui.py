@@ -53,6 +53,7 @@ from ranking import (
 from reports import export_job_csv
 from sample_data import SAMPLE_JOB_DESCRIPTIONS
 from screening import (
+    ScreeningResult,
     deep_screen_candidate,
     format_screening_markdown,
 )
@@ -944,6 +945,52 @@ def on_deep_screen(token, job_id, candidate_id, interview_n):
 # default is never actually used.
 _SCREEN_PROGRESS = gr.Progress()
 
+# Concurrent Groq evaluations for one batch deep-screen. Each candidate's
+# evaluation is 1-2 min of LLM time; running up to 3 in parallel roughly
+# halves the batch wall-clock on any tier (CPU basic included). Free-tier
+# rate limits are absorbed by llm.py's exponential-backoff retry.
+_DEEP_SCREEN_WORKERS = 3
+
+
+def _deep_screen_batch(token: str, job_id: str, results, progress) -> list[str]:
+    """Deep-screen ranked candidates, up to _DEEP_SCREEN_WORKERS at a time.
+
+    Each worker re-enters the caller's user scope (thread-local DB / vector
+    store — the same pattern as the background-ingest thread), so concurrent
+    evaluations never leak across accounts. Reports keep input order; a
+    worker that crashes is surfaced as an error block instead of aborting
+    the batch.
+    """
+    import concurrent.futures
+
+    total = len(results)
+    if total == 0:
+        return []
+
+    def _one(r) -> ScreeningResult:
+        try:
+            with auth.user_scope(token):
+                return deep_screen_candidate(job_id, r.candidate_id)
+        except Exception as exc:
+            return ScreeningResult(error=f"Deep-screen failed: {exc}")
+
+    reports: list[str] = [""] * total
+    workers = min(_DEEP_SCREEN_WORKERS, total)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_one, r): i for i, r in enumerate(results)}
+        for done, fut in enumerate(
+            concurrent.futures.as_completed(futures), 1
+        ):
+            i = futures[fut]
+            try:
+                result = fut.result()
+            except Exception as exc:
+                result = ScreeningResult(error=f"Deep-screen failed: {exc}")
+            reports[i] = f"## {results[i].name}\n\n{format_screening_markdown(result)}\n"
+            progress(done / total, desc=f"Deep-screened {done}/{total} candidates…")
+    progress(1.0, desc="Deep-screening complete")
+    return reports
+
 
 @_require_session
 def on_deep_screen_top_n(token, job_id, top_n, interview_n, progress=_SCREEN_PROGRESS):
@@ -967,16 +1014,7 @@ def on_deep_screen_top_n(token, job_id, top_n, interview_n, progress=_SCREEN_PRO
         return (
             "No candidates to screen.", gr.update(), gr.update(), gr.update()
         )
-    reports = []
-    total = len(results)
-    for i, r in enumerate(results, 1):
-        progress(
-            (i - 1) / total,
-            desc=f"Deep-screening {r.name} ({i}/{total})…",
-        )
-        result = deep_screen_candidate(job_id, r.candidate_id)
-        reports.append(f"## {r.name}\n\n{format_screening_markdown(result)}\n")
-    progress(1.0, desc="Deep-screening complete")
+    reports = _deep_screen_batch(token, job_id, results, progress)
     qualified = _interview_choices(job_id, int_n)
     return (
         "\n---\n".join(reports),

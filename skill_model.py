@@ -29,17 +29,19 @@ behaves exactly as before.
 
 from __future__ import annotations
 
-try:
-    import spaces  # type: ignore
-except Exception:
-    class _DummySpaces:
-        @staticmethod
-        def GPU(func: Any = None, **kwargs: Any) -> Any:
-            if func is None:
-                return lambda f: f
-            return func
+import config  # needed before the optional ZeroGPU import below
 
-    spaces = _DummySpaces()  # type: ignore
+# Optional ZeroGPU acceleration (Hugging Face GPU Spaces only). Enabled via
+# ZEROGPU_ENABLED=1; default OFF runs the classifier on plain CPU — no
+# ZeroGPU quota consumed, works on CPU Spaces. The import stays above the
+# PyTorch imports so HF's spaces-before-CUDA import rule holds.
+if config.ZEROGPU_ENABLED:
+    try:
+        import spaces as _spaces  # type: ignore
+    except Exception:
+        _spaces = None
+else:
+    _spaces = None
 
 import argparse
 import contextlib
@@ -54,8 +56,6 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import BertConfig, BertForSequenceClassification, BertTokenizer
-
-import config
 
 DEFAULT_MODEL = "prajjwal1/bert-mini"  # 11M params — better capacity than bert-tiny
 # Phrases are 1-4 words; longer inputs add padding noise for a tiny model.
@@ -557,7 +557,16 @@ def available() -> bool:
     return load()
 
 
-@spaces.GPU
+def warm() -> None:
+    """Preload the trained classifier (best-effort, never raises).
+
+    Called from a daemon thread at boot so the first ranking run never pays
+    the model load inline on CPU. Fail-open: no artifact → no-op.
+    """
+    with contextlib.suppress(Exception):
+        load()
+
+
 def _predict_batch(texts: list[str]) -> list[tuple[str, float]]:
     """Batch single-label prediction → [(label, confidence), ...].
 
@@ -582,6 +591,11 @@ def _predict_batch(texts: list[str]) -> list[tuple[str, float]]:
             out.extend((id2label[int(i2)], round(float(c), 4))
                        for i2, c in zip(idx.tolist(), conf.tolist(), strict=False))
     return out
+
+
+# Route through ZeroGPU only when explicitly enabled (default: plain CPU).
+if _spaces is not None:
+    _predict_batch = _spaces.GPU(_predict_batch)
 
 
 def classify_tokens(tokens: list[str]) -> dict[str, tuple[str, float]]:

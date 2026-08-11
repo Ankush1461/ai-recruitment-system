@@ -55,6 +55,18 @@ GOOGLE_CLOCK_SKEW_SECONDS: int = int(os.getenv("GOOGLE_CLOCK_SKEW_SECONDS", "60"
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
 # Multilingual cross-encoder for reranking EN + DE retrieval hits.
 RERANK_MODEL: str = os.getenv("RERANK_MODEL", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
+# Rerank scoring inputs are truncated to this many characters — the
+# cross-encoder's cost scales with input length, and the head of a resume
+# chunk carries the relevance signal (CPU Spaces: ~2.4x faster with no
+# ranking-quality change). Only what the model SCORES is shortened; the full
+# chunk text is still returned to callers.
+RERANK_MAX_CHARS: int = int(os.getenv("RERANK_MAX_CHARS", "512"))
+# Optional ZeroGPU acceleration for the local models (embeddings, reranker,
+# skill classifier). Default OFF: everything runs on plain CPU — no ZeroGPU
+# quota consumed, works on free CPU Spaces. Set ZEROGPU_ENABLED=1 (e.g. a
+# Space secret) to route those calls through spaces.GPU on a GPU (ZeroGPU)
+# Space instead, e.g. after upgrading to PRO for GPU inference speed.
+ZEROGPU_ENABLED: bool = os.getenv("ZEROGPU_ENABLED", "0").lower() not in ("0", "false", "no", "off")
 
 # ---- Fine-tuned skill classifier ---------------------------------------------
 # Optional tiny BERT fine-tuned on labeled resume skill phrases (skill_model.py;
